@@ -13,6 +13,7 @@ import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from pdf2image import convert_from_path
 from tkinter import messagebox, filedialog
+import time
 
 # 테마 설정 (앱 시작 전에 설정)
 ctk.set_default_color_theme("dark-blue")
@@ -20,7 +21,278 @@ ctk.set_appearance_mode("system")
 
 # 현재 버전
 CURRENT_VERSION = "1.0.0"
-GITHUB_MANIFEST_URL = "https://raw.githubusercontent.com/username/repo/main/manifest.json"  # manifest.json 파일 URL
+GITHUB_REPO_OWNER = "c-closed"  # GitHub 사용자명
+GITHUB_REPO_NAME = "P2J"  # GitHub 저장소명
+
+
+# ----------- 시작 업데이트 확인 창 -------------
+
+class StartupUpdateWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("업데이트 확인중...")
+        self.geometry("500x280")
+        self.resizable(False, False)
+        
+        # 창을 화면 중앙에 배치
+        self.update_idletasks()
+        x = (self.winfo_screenwidth() // 2) - (500 // 2)
+        y = (self.winfo_screenheight() // 2) - (280 // 2)
+        self.geometry(f"500x280+{x}+{y}")
+        
+        self.grab_set()
+        
+        self.update_available = False
+        self.files_to_update = []
+        self.new_version = None
+        self._check_running = False
+
+        # 상태 레이블
+        self.status_label = ctk.CTkLabel(self, text="업데이트 확인 중...", 
+                                        font=("Arial", 14))
+        self.status_label.pack(pady=10)
+
+        # 세부 정보 레이블 (파일 개수)
+        self.detail_label = ctk.CTkLabel(self, text="", text_color="gray")
+        self.detail_label.pack(pady=5)
+
+        # 프로그레스바
+        self.progress = ctk.CTkProgressBar(self, width=400)
+        self.progress.pack(pady=20)
+        self.progress.set(0)
+
+        # 버튼 프레임
+        self.button_frame = ctk.CTkFrame(self)
+        self.button_frame.pack(pady=20)
+
+        # 시작 시에는 버튼 숨김
+        self.skip_button = None
+        self.update_button = None
+        self.file_label = None
+
+        # 메인 루프 시작 후 업데이트 확인 시작 (1000ms 후)
+        self.after(1000, self.start_check_updates)
+
+    def start_check_updates(self):
+        """업데이트 확인 시작 (메인 루프 시작 후)"""
+        if not self._check_running:
+            self._check_running = True
+            threading.Thread(target=self.check_updates, daemon=True).start()
+
+    def update_check_progress(self, current, total, filename):
+        """파일 체크 진행 상황 업데이트"""
+        try:
+            self.detail_label.configure(text=f"확인 중: {filename} ({current}/{total})")
+            if total > 0:
+                self.progress.set(current / total)
+        except Exception as e:
+            print(f"진행 상황 업데이트 실패: {e}")
+
+    def check_updates(self):
+        """업데이트 확인 (백그라운드 스레드)"""
+        try:
+            has_update, new_version, files_to_update = check_for_updates(
+                progress_callback=lambda c, t, f: self.after(0, self.update_check_progress, c, t, f)
+            )
+            
+            # UI 업데이트를 안전하게 예약
+            try:
+                if has_update and files_to_update:
+                    self.after(0, self.show_update_available, new_version, files_to_update)
+                else:
+                    self.after(0, self.show_no_update)
+            except:
+                # after 호출 실패 시 직접 호출 시도
+                if has_update and files_to_update:
+                    self.show_update_available(new_version, files_to_update)
+                else:
+                    self.show_no_update()
+                
+        except Exception as e:
+            print(f"업데이트 확인 실패: {e}")
+            try:
+                self.after(0, self.show_check_failed)
+            except:
+                self.show_check_failed()
+
+    def show_update_available(self, new_version, files_to_update):
+        """업데이트가 있을 때 UI 업데이트 (메인 스레드)"""
+        try:
+            self.update_available = True
+            self.files_to_update = files_to_update
+            self.new_version = new_version
+            
+            file_list = ", ".join([f for f, _ in files_to_update[:3]])
+            if len(files_to_update) > 3:
+                file_list += f" 외 {len(files_to_update) - 3}개"
+            
+            self.status_label.configure(text=f"새 버전 v{new_version} 발견!")
+            self.detail_label.configure(text=f"업데이트 파일: {file_list}")
+            self.progress.set(1)
+            
+            # 버튼 표시
+            self.update_button = ctk.CTkButton(self.button_frame, text="업데이트", 
+                                              command=self.start_update, width=150)
+            self.update_button.pack(side="left", padx=10)
+            
+            self.skip_button = ctk.CTkButton(self.button_frame, text="건너뛰기", 
+                                            command=self.skip_update, width=150,
+                                            fg_color="gray")
+            self.skip_button.pack(side="left", padx=10)
+        except Exception as e:
+            print(f"UI 업데이트 실패: {e}")
+
+    def show_no_update(self):
+        """업데이트가 없을 때 UI 업데이트 (메인 스레드)"""
+        try:
+            self.progress.set(1)
+            
+            self.status_label.configure(text="최신 버전입니다")
+            self.detail_label.configure(text="프로그램을 시작합니다...")
+            
+            # 직접 호출 대신 타이머 사용
+            try:
+                self.after(1000, self.skip_update)
+            except:
+                time.sleep(1)
+                self.skip_update()
+        except Exception as e:
+            print(f"UI 업데이트 실패: {e}")
+
+    def show_check_failed(self):
+        """업데이트 확인 실패 시 UI 업데이트 (메인 스레드)"""
+        try:
+            self.progress.set(0)
+            
+            self.status_label.configure(text="업데이트 확인 실패")
+            self.detail_label.configure(text="프로그램을 시작합니다...")
+            
+            try:
+                self.after(1000, self.skip_update)
+            except:
+                time.sleep(1)
+                self.skip_update()
+        except Exception as e:
+            print(f"UI 업데이트 실패: {e}")
+
+    def start_update(self):
+        """업데이트 시작"""
+        if self.update_button:
+            self.update_button.configure(state="disabled")
+        if self.skip_button:
+            self.skip_button.configure(state="disabled")
+        
+        # 업데이트 진행 화면으로 전환
+        self.status_label.configure(text="업데이트 다운로드 중...")
+        self.detail_label.configure(text="")
+        
+        # 프로그레스바 다시 표시
+        self.progress.set(0)
+        
+        # 파일별 진행 레이블
+        if not self.file_label:
+            self.file_label = ctk.CTkLabel(self, text="준비 중...", text_color="gray")
+            self.file_label.pack(pady=5)
+        else:
+            self.file_label.configure(text="준비 중...")
+        
+        threading.Thread(target=self.download_updates, daemon=True).start()
+
+    def download_updates(self):
+        """업데이트 다운로드 (백그라운드 스레드)"""
+        try:
+            total_files = len(self.files_to_update)
+            
+            if getattr(sys, 'frozen', False):
+                base_dir = Path(sys.executable).parent
+            else:
+                base_dir = Path(__file__).parent
+            
+            for idx, (filename, file_info) in enumerate(self.files_to_update):
+                # UI 업데이트 (메인 스레드에서)
+                try:
+                    self.after(0, self.update_download_progress, idx, total_files, filename)
+                except:
+                    pass
+                
+                destination = base_dir / filename
+                url = file_info.get("url")
+                
+                # .exe 파일은 _new 접미사로 임시 저장
+                if filename.endswith(".exe"):
+                    temp_destination = base_dir / (filename.replace(".exe", "_new.exe"))
+                else:
+                    temp_destination = destination
+                
+                # 파일 다운로드
+                if not download_file(url, temp_destination):
+                    try:
+                        self.after(0, self.show_download_error, filename)
+                    except:
+                        self.show_download_error(filename)
+                    return
+            
+            # 모든 파일 다운로드 완료
+            try:
+                self.after(0, self.complete_download, base_dir)
+            except:
+                self.complete_download(base_dir)
+                
+        except Exception as e:
+            print(f"업데이트 다운로드 실패: {e}")
+            try:
+                self.after(0, self.show_download_error, "알 수 없는 파일")
+            except:
+                self.show_download_error("알 수 없는 파일")
+
+    def update_download_progress(self, idx, total_files, filename):
+        """다운로드 진행 상황 업데이트 (메인 스레드)"""
+        try:
+            self.progress.set((idx) / total_files)
+            self.detail_label.configure(text=f"다운로드 중: {filename} ({idx+1}/{total_files})")
+        except Exception as e:
+            print(f"진행 상황 업데이트 실패: {e}")
+
+    def show_download_error(self, filename):
+        """다운로드 오류 표시 (메인 스레드)"""
+        try:
+            messagebox.showerror("오류", f"{filename} 다운로드에 실패했습니다.")
+            self.skip_update()
+        except Exception as e:
+            print(f"오류 표시 실패: {e}")
+            self.skip_update()
+
+    def complete_download(self, base_dir):
+        """다운로드 완료 처리 (메인 스레드)"""
+        try:
+            self.progress.set(1)
+            self.status_label.configure(text="업데이트 완료!")
+            self.detail_label.configure(text="프로그램을 재시작합니다...")
+            
+            # .exe 파일 교체 처리
+            exe_files = [f for f, _ in self.files_to_update if f.endswith(".exe")]
+            
+            if exe_files and getattr(sys, 'frozen', False):
+                try:
+                    self.after(1000, lambda: create_updater_script(base_dir, exe_files))
+                except:
+                    time.sleep(1)
+                    create_updater_script(base_dir, exe_files)
+            else:
+                try:
+                    self.after(1000, self.skip_update)
+                except:
+                    time.sleep(1)
+                    self.skip_update()
+        except Exception as e:
+            print(f"완료 처리 실패: {e}")
+
+    def skip_update(self):
+        """업데이트 건너뛰고 메인 앱 시작"""
+        try:
+            self.destroy()
+        except Exception as e:
+            print(f"창 닫기 실패: {e}")
 
 
 # ----------- 자동 업데이트 관련 함수 -------------
@@ -40,55 +312,118 @@ def calculate_file_hash(file_path):
         print(f"해시 계산 실패: {file_path} - {e}")
         return None
 
-def check_for_updates():
-    """GitHub manifest.json에서 업데이트 확인"""
+def get_latest_release_info():
+    """GitHub Releases에서 최신 릴리스 정보 가져오기"""
     try:
-        response = requests.get(GITHUB_MANIFEST_URL, timeout=10)
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        
+        release_data = response.json()
+        version = release_data["tag_name"].replace("v", "")
+        assets = release_data["assets"]
+        
+        return version, assets
+        
+    except Exception as e:
+        print(f"릴리스 정보 가져오기 실패: {e}")
+        return None, None
+
+def download_manifest_from_release(assets):
+    """Releases의 manifest.json 다운로드"""
+    try:
+        manifest_asset = None
+        
+        # manifest.json 찾기
+        for asset in assets:
+            if asset["name"] == "manifest.json":
+                manifest_asset = asset
+                break
+        
+        if not manifest_asset:
+            print("manifest.json을 찾을 수 없습니다.")
+            return None
+        
+        # manifest.json 다운로드
+        response = requests.get(manifest_asset["browser_download_url"], timeout=10)
         response.raise_for_status()
         
         manifest = response.json()
-        remote_version = manifest.get("version", "0.0.0")
+        return manifest
         
-        if remote_version > CURRENT_VERSION:
-            # 업데이트가 필요한 파일 목록
-            files_to_update = []
+    except Exception as e:
+        print(f"manifest.json 다운로드 실패: {e}")
+        return None
+
+def check_for_updates(progress_callback=None):
+    """GitHub Releases에서 업데이트 확인"""
+    try:
+        # 최신 릴리스 정보 가져오기
+        remote_version, assets = get_latest_release_info()
+        
+        if not remote_version or not assets:
+            return False, None, []
+        
+        print(f"원격 버전: {remote_version}, 현재 버전: {CURRENT_VERSION}")
+        
+        # 버전 비교
+        if remote_version <= CURRENT_VERSION:
+            if progress_callback:
+                progress_callback(1, 1, "최신 버전")
+            return False, None, []
+        
+        # manifest.json 다운로드
+        manifest = download_manifest_from_release(assets)
+        
+        if not manifest:
+            return False, None, []
+        
+        # 업데이트가 필요한 파일 목록
+        files_to_update = []
+        
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(sys.executable).parent
+        else:
+            base_dir = Path(__file__).parent
+        
+        manifest_files = manifest.get("files", {})
+        total_files = len(manifest_files)
+        current_file = 0
+        
+        for filename, file_info in manifest_files.items():
+            current_file += 1
             
-            if getattr(sys, 'frozen', False):
-                base_dir = Path(sys.executable).parent
+            # 진행 상황 콜백
+            if progress_callback:
+                progress_callback(current_file, total_files, filename)
+            
+            local_file = base_dir / filename
+            remote_hash = file_info.get("sha256")
+            
+            # 로컬 파일이 없거나 해시가 다르면 업데이트 필요
+            if not local_file.exists():
+                files_to_update.append((filename, file_info))
+                print(f"파일 없음: {filename}")
             else:
-                base_dir = Path(__file__).parent
-            
-            for filename, file_info in manifest.get("files", {}).items():
-                local_file = base_dir / filename
-                remote_hash = file_info.get("sha256")
-                
-                # 로컬 파일이 없거나 해시가 다르면 업데이트 필요
-                if not local_file.exists():
+                local_hash = calculate_file_hash(local_file)
+                if local_hash != remote_hash:
                     files_to_update.append((filename, file_info))
-                    print(f"파일 없음: {filename}")
+                    print(f"해시 불일치: {filename}")
                 else:
-                    local_hash = calculate_file_hash(local_file)
-                    if local_hash != remote_hash:
-                        files_to_update.append((filename, file_info))
-                        print(f"해시 불일치: {filename}")
-            
-            return True, remote_version, files_to_update
+                    print(f"최신 상태: {filename}")
         
-        return False, None, []
+        return True, remote_version, files_to_update
         
     except Exception as e:
         print(f"업데이트 확인 실패: {e}")
         return False, None, []
 
-def download_file(url, destination, progress_callback=None):
+def download_file(url, destination):
     """파일 다운로드"""
     try:
         print(f"다운로드 중: {url}")
         response = requests.get(url, stream=True, timeout=30)
         response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded = 0
         
         # 임시 파일로 다운로드
         temp_file = destination.with_suffix(destination.suffix + '.tmp')
@@ -96,10 +431,6 @@ def download_file(url, destination, progress_callback=None):
         with open(temp_file, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-                downloaded += len(chunk)
-                if progress_callback and total_size > 0:
-                    progress = (downloaded / total_size) * 100
-                    progress_callback(progress)
         
         # 다운로드 완료 후 원본 파일명으로 변경
         if temp_file.exists():
@@ -112,42 +443,6 @@ def download_file(url, destination, progress_callback=None):
         
     except Exception as e:
         print(f"다운로드 실패: {e}")
-        return False
-
-def apply_updates(files_to_update, base_dir, progress_callback=None):
-    """여러 파일 업데이트 적용"""
-    try:
-        total_files = len(files_to_update)
-        
-        for idx, (filename, file_info) in enumerate(files_to_update):
-            if progress_callback:
-                progress_callback(f"다운로드 중: {filename} ({idx+1}/{total_files})")
-            
-            destination = base_dir / filename
-            url = file_info.get("url")
-            
-            # .exe 파일은 _new 접미사로 임시 저장
-            if filename.endswith(".exe"):
-                temp_destination = base_dir / (filename.replace(".exe", "_new.exe"))
-            else:
-                temp_destination = destination
-            
-            if not download_file(url, temp_destination):
-                return False
-        
-        # 모든 파일 다운로드 완료 후 .exe 파일 교체 처리
-        exe_files = [f for f, _ in files_to_update if f.endswith(".exe")]
-        
-        if exe_files and getattr(sys, 'frozen', False):
-            # 배치 파일로 exe 교체
-            create_updater_script(base_dir, exe_files)
-            return True
-        else:
-            print("개발 모드이거나 exe 파일이 없습니다.")
-            return True
-            
-    except Exception as e:
-        print(f"업데이트 적용 실패: {e}")
         return False
 
 def create_updater_script(base_dir, exe_files):
@@ -264,7 +559,7 @@ def prepare_poppler_path():
     return None
 
 
-# ----------- 진행 팝업 (2개 프로그레스바) -------------
+# ----------- 변환 진행 팝업 -------------
 
 class ProgressPopup(ctk.CTkToplevel):
     def __init__(self, parent, total_files, total_pages):
@@ -338,33 +633,17 @@ class PDFtoJPGApp(ctk.CTkFrame):
         super().__init__(master)
         self.pack(fill="both", expand=True)
         self.master = master
-        self.master.title(f"PDF → JPG 변환기 v{CURRENT_VERSION}")
-        self.master.geometry("600x450")
+        self.master.title(f"PDF → JPG 변환기 [made by. 류호준]")
+        self.master.geometry("600x250")
 
         # 아이콘 설정 (exe로 빌드 시 경로 고려)
         if getattr(sys, 'frozen', False):
-            # PyInstaller로 빌드된 실행 파일
             icon_path = Path(sys.executable).parent / "icon.ico"
         else:
-            # 일반 스크립트 실행
             icon_path = Path(__file__).parent / "icon.ico"
 
         if icon_path.exists():
             self.master.iconbitmap(str(icon_path))
-
-        # 업데이트 확인 버튼
-        update_frame = ctk.CTkFrame(self)
-        update_frame.pack(pady=5)
-        
-        self.update_button = ctk.CTkButton(update_frame, text="업데이트 확인", 
-                                          command=self.check_updates, width=120)
-        self.update_button.pack(side="left", padx=5)
-        
-        self.version_label = ctk.CTkLabel(update_frame, text=f"v{CURRENT_VERSION}")
-        self.version_label.pack(side="left", padx=5)
-
-        self.label = ctk.CTkLabel(self, text="PDF 파일을 아래 상자에 드래그 앤 드롭 하세요")
-        self.label.pack(pady=10)
 
         self.drop_area = ctk.CTkTextbox(self, height=100)
         self.drop_area.pack(padx=10, pady=10, fill="x")
@@ -385,6 +664,10 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self.convert_button = ctk.CTkButton(button_frame, text="변환하기", command=self.start_conversion, width=120)
         self.convert_button.grid(row=0, column=2, padx=5)
 
+        # 버전 정보
+        version_label = ctk.CTkLabel(self, text=f"v{CURRENT_VERSION}", text_color="gray")
+        version_label.pack(pady=5)
+
         self.status_label = ctk.CTkLabel(self, text="", text_color="blue")
         self.status_label.pack()
 
@@ -402,41 +685,6 @@ class PDFtoJPGApp(ctk.CTkFrame):
         # drag and drop binding to root window
         master.drop_target_register(DND_FILES)
         master.dnd_bind("<<Drop>>", self.on_drop)
-
-    def check_updates(self):
-        """업데이트 확인"""
-        self.status_label.configure(text="업데이트 확인 중...")
-        self.update_button.configure(state="disabled")
-        
-        def check_thread():
-            has_update, new_version, files_to_update = check_for_updates()
-            
-            if has_update and files_to_update:
-                self.status_label.configure(text=f"새 버전 발견: v{new_version}")
-                
-                file_list = "\n".join([f"- {f}" for f, _ in files_to_update])
-                message = f"새 버전 v{new_version}이 있습니다.\n\n업데이트할 파일:\n{file_list}\n\n지금 업데이트하시겠습니까?"
-                
-                if messagebox.askyesno("업데이트 가능", message):
-                    # 업데이트 다운로드 및 적용
-                    self.status_label.configure(text="업데이트 다운로드 중...")
-                    
-                    def progress_update(msg):
-                        self.status_label.configure(text=msg)
-                    
-                    if apply_updates(files_to_update, self.install_dir, progress_update):
-                        self.status_label.configure(text="업데이트 완료! 프로그램을 재시작합니다...")
-                        # exe 파일이 있으면 배치 파일이 실행되어 자동 종료됨
-                    else:
-                        messagebox.showerror("오류", "업데이트 다운로드에 실패했습니다.")
-                        self.status_label.configure(text="")
-            else:
-                self.status_label.configure(text="최신 버전입니다.")
-                messagebox.showinfo("업데이트", "현재 최신 버전을 사용 중입니다.")
-            
-            self.update_button.configure(state="normal")
-        
-        threading.Thread(target=check_thread, daemon=True).start()
 
     def select_files(self):
         """파일 선택 다이얼로그"""
@@ -540,7 +788,20 @@ class PDFtoJPGApp(ctk.CTkFrame):
                 self.progress_popup.destroy()
 
 
+# ----------- 메인 실행 -------------
+
 if __name__ == "__main__":
+    # 임시 루트 창 생성 (숨김)
     root = TkinterDnD.Tk()
+    root.withdraw()  # 메인 창 숨기기
+    
+    # 업데이트 확인 창 표시
+    update_window = StartupUpdateWindow(root)
+    
+    # 업데이트 창이 닫힐 때까지 대기
+    root.wait_window(update_window)
+    
+    # 메인 창 표시
+    root.deiconify()
     app = PDFtoJPGApp(root)
     root.mainloop()
