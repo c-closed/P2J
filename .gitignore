@@ -1,0 +1,7 @@
+icon.ico
+dist/
+build/
+poppler-25.07.0/
+hash.py
+manifest.json
+P2J.spec
