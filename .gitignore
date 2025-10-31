@@ -3,7 +3,6 @@ dist/
 build/
 poppler-25.07.0/
 hash.py
-manifest.json
 P2J.spec
 PDF TO JPG 변환기-cache/
 PDF TO JPG 변환기-SetupFiles/
