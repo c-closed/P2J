@@ -6,8 +6,10 @@ from pathlib import Path
 import re
 import requests
 import zipfile
+import queue
+import ctypes
+import ctypes.wintypes
 import hashlib
-import subprocess
 import json
 import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -15,471 +17,427 @@ from pdf2image import convert_from_path
 from tkinter import messagebox, filedialog
 import time
 
+
 # 테마 설정 (앱 시작 전에 설정)
-ctk.set_default_color_theme("dark-blue")
+ctk.set_default_color_theme("blue")
 ctk.set_appearance_mode("system")
 
-# 현재 버전
-CURRENT_VERSION = "1.0.0"
-GITHUB_REPO_OWNER = "c-closed"  # GitHub 사용자명
-GITHUB_REPO_NAME = "P2J"  # GitHub 저장소명
 
 
-# ----------- 시작 업데이트 확인 창 -------------
+# ----------- 아이콘 경로 가져오기 함수 -------------
 
-class StartupUpdateWindow(ctk.CTkToplevel):
+
+def get_icon_path():
+    """아이콘 경로 반환"""
+    if getattr(sys, 'frozen', False):
+        icon_path = Path(sys.executable).parent / "icon.ico"
+    else:
+        icon_path = Path(__file__).parent / "icon.ico"
+    
+    if icon_path.exists():
+        return str(icon_path)
+    return None
+
+
+def set_window_icon(window, icon_path):
+    """윈도우 핸들을 통해 아이콘 설정 (Win32 API 사용)"""
+    try:
+        hwnd = window.winfo_id()
+        print(f"윈도우 핸들: {hwnd}")
+        
+        hicon = ctypes.windll.user32.LoadImageW(
+            0, icon_path, 1, 0, 0, 0x00000010
+        )
+        if hicon == 0:
+            print(f"아이콘 로드 실패: {icon_path}")
+            return False
+        
+        print(f"아이콘 로드 성공: {hicon}")
+        
+        WM_SETICON = 0x80
+        ICON_SMALL = 0
+        ICON_BIG = 1
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
+        ctypes.windll.user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+        print(f"윈도우 핸들 아이콘 설정 완료: {icon_path}")
+        return True
+    except Exception as e:
+        print(f"윈도우 핸들 아이콘 설정 실패: {e}")
+        return False
+
+
+
+# ----------- 통합 설치/업데이트 팝업 -------------
+
+
+class UnifiedInstallPopup(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("업데이트 확인중...")
-        self.geometry("500x280")
+        self.title("초기화 중...")
+        self.geometry("600x300")
         self.resizable(False, False)
         
-        # 창을 화면 중앙에 배치
         self.update_idletasks()
-        x = (self.winfo_screenwidth() // 2) - (500 // 2)
-        y = (self.winfo_screenheight() // 2) - (280 // 2)
-        self.geometry(f"500x280+{x}+{y}")
+        x = (self.winfo_screenwidth() // 2) - (600 // 2)
+        y = (self.winfo_screenheight() // 2) - (300 // 2)
+        self.geometry(f"600x300+{x}+{y}")
         
         self.grab_set()
         
-        self.update_available = False
-        self.files_to_update = []
-        self.new_version = None
-        self._check_running = False
-
-        # 상태 레이블
-        self.status_label = ctk.CTkLabel(self, text="업데이트 확인 중...", 
-                                        font=("Arial", 14))
-        self.status_label.pack(pady=10)
-
-        # 세부 정보 레이블 (파일 개수)
-        self.detail_label = ctk.CTkLabel(self, text="", text_color="gray")
-        self.detail_label.pack(pady=5)
-
-        # 프로그레스바
-        self.progress = ctk.CTkProgressBar(self, width=400)
-        self.progress.pack(pady=20)
-        self.progress.set(0)
-
-        # 버튼 프레임
-        self.button_frame = ctk.CTkFrame(self)
-        self.button_frame.pack(pady=20)
-
-        # 시작 시에는 버튼 숨김
-        self.skip_button = None
-        self.update_button = None
-        self.file_label = None
-
-        # 메인 루프 시작 후 업데이트 확인 시작 (1000ms 후)
-        self.after(1000, self.start_check_updates)
-
-    def start_check_updates(self):
-        """업데이트 확인 시작 (메인 루프 시작 후)"""
-        if not self._check_running:
-            self._check_running = True
-            threading.Thread(target=self.check_updates, daemon=True).start()
-
-    def update_check_progress(self, current, total, filename):
-        """파일 체크 진행 상황 업데이트"""
+        icon_path = get_icon_path()
+        if icon_path:
+            self.after(50, lambda: set_window_icon(self, icon_path))
+        
+        self._last_update_time = 0
+        self._update_interval = 0.05
+        
+        # 로그 큐
+        self.log_queue = queue.Queue()
+        self._closing = False
+        
+        # 통합 로그 텍스트박스
+        self.log_box = ctk.CTkTextbox(self, height=270, width=550, font=("Consolas", 11))
+        self.log_box.pack(pady=10, padx=25)
+        self.log_box.configure(state="disabled")
+        
+        # 로그 저장
+        self.logs = []
+        
+        self.process_log_queue()
+    
+    def add_log(self, message, is_progress=False):
+        """로그 추가 (메인 스레드에서만 호출)"""
         try:
-            self.detail_label.configure(text=f"확인 중: {filename} ({current}/{total})")
-            if total > 0:
-                self.progress.set(current / total)
-        except Exception as e:
-            print(f"진행 상황 업데이트 실패: {e}")
-
-    def check_updates(self):
-        """업데이트 확인 (백그라운드 스레드)"""
-        try:
-            has_update, new_version, files_to_update = check_for_updates(
-                progress_callback=lambda c, t, f: self.after(0, self.update_check_progress, c, t, f)
-            )
+            self.log_box.configure(state="normal")
             
-            # UI 업데이트를 안전하게 예약
-            try:
-                if has_update and files_to_update:
-                    self.after(0, self.show_update_available, new_version, files_to_update)
-                else:
-                    self.after(0, self.show_no_update)
-            except:
-                # after 호출 실패 시 직접 호출 시도
-                if has_update and files_to_update:
-                    self.show_update_available(new_version, files_to_update)
-                else:
-                    self.show_no_update()
+            if is_progress:
+                if self.logs:
+                    last_line_index = len(self.logs)
+                    self.log_box.delete(f"{last_line_index}.0", f"{last_line_index + 1}.0")
+                    self.logs.pop()
                 
-        except Exception as e:
-            print(f"업데이트 확인 실패: {e}")
-            try:
-                self.after(0, self.show_check_failed)
-            except:
-                self.show_check_failed()
-
-    def show_update_available(self, new_version, files_to_update):
-        """업데이트가 있을 때 UI 업데이트 (메인 스레드)"""
-        try:
-            self.update_available = True
-            self.files_to_update = files_to_update
-            self.new_version = new_version
-            
-            file_list = ", ".join([f for f, _ in files_to_update[:3]])
-            if len(files_to_update) > 3:
-                file_list += f" 외 {len(files_to_update) - 3}개"
-            
-            self.status_label.configure(text=f"새 버전 v{new_version} 발견!")
-            self.detail_label.configure(text=f"업데이트 파일: {file_list}")
-            self.progress.set(1)
-            
-            # 버튼 표시
-            self.update_button = ctk.CTkButton(self.button_frame, text="업데이트", 
-                                              command=self.start_update, width=150)
-            self.update_button.pack(side="left", padx=10)
-            
-            self.skip_button = ctk.CTkButton(self.button_frame, text="건너뛰기", 
-                                            command=self.skip_update, width=150,
-                                            fg_color="gray")
-            self.skip_button.pack(side="left", padx=10)
-        except Exception as e:
-            print(f"UI 업데이트 실패: {e}")
-
-    def show_no_update(self):
-        """업데이트가 없을 때 UI 업데이트 (메인 스레드)"""
-        try:
-            self.progress.set(1)
-            
-            self.status_label.configure(text="최신 버전입니다")
-            self.detail_label.configure(text="프로그램을 시작합니다...")
-            
-            # 직접 호출 대신 타이머 사용
-            try:
-                self.after(1000, self.skip_update)
-            except:
-                time.sleep(1)
-                self.skip_update()
-        except Exception as e:
-            print(f"UI 업데이트 실패: {e}")
-
-    def show_check_failed(self):
-        """업데이트 확인 실패 시 UI 업데이트 (메인 스레드)"""
-        try:
-            self.progress.set(0)
-            
-            self.status_label.configure(text="업데이트 확인 실패")
-            self.detail_label.configure(text="프로그램을 시작합니다...")
-            
-            try:
-                self.after(1000, self.skip_update)
-            except:
-                time.sleep(1)
-                self.skip_update()
-        except Exception as e:
-            print(f"UI 업데이트 실패: {e}")
-
-    def start_update(self):
-        """업데이트 시작"""
-        if self.update_button:
-            self.update_button.configure(state="disabled")
-        if self.skip_button:
-            self.skip_button.configure(state="disabled")
-        
-        # 업데이트 진행 화면으로 전환
-        self.status_label.configure(text="업데이트 다운로드 중...")
-        self.detail_label.configure(text="")
-        
-        # 프로그레스바 다시 표시
-        self.progress.set(0)
-        
-        # 파일별 진행 레이블
-        if not self.file_label:
-            self.file_label = ctk.CTkLabel(self, text="준비 중...", text_color="gray")
-            self.file_label.pack(pady=5)
-        else:
-            self.file_label.configure(text="준비 중...")
-        
-        threading.Thread(target=self.download_updates, daemon=True).start()
-
-    def download_updates(self):
-        """업데이트 다운로드 (백그라운드 스레드)"""
-        try:
-            total_files = len(self.files_to_update)
-            
-            if getattr(sys, 'frozen', False):
-                base_dir = Path(sys.executable).parent
+                self.logs.append(message)
+                self.log_box.insert("end", message + "\n")
             else:
-                base_dir = Path(__file__).parent
+                self.logs.append(message)
+                self.log_box.insert("end", message + "\n")
             
-            for idx, (filename, file_info) in enumerate(self.files_to_update):
-                # UI 업데이트 (메인 스레드에서)
-                try:
-                    self.after(0, self.update_download_progress, idx, total_files, filename)
-                except:
-                    pass
-                
-                destination = base_dir / filename
-                url = file_info.get("url")
-                
-                # .exe 파일은 _new 접미사로 임시 저장
-                if filename.endswith(".exe"):
-                    temp_destination = base_dir / (filename.replace(".exe", "_new.exe"))
-                else:
-                    temp_destination = destination
-                
-                # 파일 다운로드
-                if not download_file(url, temp_destination):
-                    try:
-                        self.after(0, self.show_download_error, filename)
-                    except:
-                        self.show_download_error(filename)
-                    return
-            
-            # 모든 파일 다운로드 완료
-            try:
-                self.after(0, self.complete_download, base_dir)
-            except:
-                self.complete_download(base_dir)
-                
+            self.log_box.see("end")
+            self.log_box.configure(state="disabled")
+            self.update()
         except Exception as e:
-            print(f"업데이트 다운로드 실패: {e}")
-            try:
-                self.after(0, self.show_download_error, "알 수 없는 파일")
-            except:
-                self.show_download_error("알 수 없는 파일")
-
-    def update_download_progress(self, idx, total_files, filename):
-        """다운로드 진행 상황 업데이트 (메인 스레드)"""
+            print(f"로그 추가 실패: {e}")
+    
+    def safe_update_status(self, status, progress=None, detail="", step_name=""):
+        """상태 업데이트 (빈도 제한 포함)"""
+        current_time = time.time()
+        if current_time - self._last_update_time < self._update_interval and progress not in [0, 1.0]:
+            return
+        self._last_update_time = current_time
+        
         try:
-            self.progress.set((idx) / total_files)
-            self.detail_label.configure(text=f"다운로드 중: {filename} ({idx+1}/{total_files})")
+            if progress is not None:
+                percent = int(progress * 100)
+                
+                if progress == 0:
+                    self.safe_add_log(f"→ {status} {percent}%", is_progress=True)
+                elif progress < 1.0:
+                    self.safe_add_log(f"→ {status} {percent}%", is_progress=True)
+                elif progress == 1.0:
+                    self.safe_add_log(f"→ {status} 100%", is_progress=True)
+                    if detail:
+                        self.safe_add_log(f"  ✓ {detail}", is_progress=False)
+                    else:
+                        self.safe_add_log(f"  ✓ 완료", is_progress=False)
         except Exception as e:
-            print(f"진행 상황 업데이트 실패: {e}")
-
-    def show_download_error(self, filename):
-        """다운로드 오류 표시 (메인 스레드)"""
+            pass
+    
+    def process_log_queue(self):
+        """큐에서 로그를 꺼내 처리"""
+        if self._closing:
+            return
         try:
-            messagebox.showerror("오류", f"{filename} 다운로드에 실패했습니다.")
-            self.skip_update()
+            while not self.log_queue.empty():
+                item = self.log_queue.get_nowait()
+                if isinstance(item, tuple) and len(item) == 2:
+                    message, is_progress = item
+                    self.add_log(message, is_progress)
+        except queue.Empty:
+            pass
         except Exception as e:
-            print(f"오류 표시 실패: {e}")
-            self.skip_update()
-
-    def complete_download(self, base_dir):
-        """다운로드 완료 처리 (메인 스레드)"""
+            print(f"큐 처리 실패: {e}")
         try:
-            self.progress.set(1)
-            self.status_label.configure(text="업데이트 완료!")
-            self.detail_label.configure(text="프로그램을 재시작합니다...")
-            
-            # .exe 파일 교체 처리
-            exe_files = [f for f, _ in self.files_to_update if f.endswith(".exe")]
-            
-            if exe_files and getattr(sys, 'frozen', False):
-                try:
-                    self.after(1000, lambda: create_updater_script(base_dir, exe_files))
-                except:
-                    time.sleep(1)
-                    create_updater_script(base_dir, exe_files)
-            else:
-                try:
-                    self.after(1000, self.skip_update)
-                except:
-                    time.sleep(1)
-                    self.skip_update()
+            self.after(100, self.process_log_queue)
+        except:
+            pass
+    
+    def safe_add_log(self, message, is_progress=False):
+        """스레드 안전 로그 추가"""
+        try:
+            self.log_queue.put((message, is_progress))
         except Exception as e:
-            print(f"완료 처리 실패: {e}")
+            print(f"safe_add_log 실패: {e}")
 
-    def skip_update(self):
-        """업데이트 건너뛰고 메인 앱 시작"""
+    def close_window(self):
+        """창 닫기"""
         try:
+            self._closing = True
+            self.grab_release()
             self.destroy()
         except Exception as e:
             print(f"창 닫기 실패: {e}")
 
 
-# ----------- 자동 업데이트 관련 함수 -------------
 
-def calculate_file_hash(file_path):
-    """파일의 SHA256 해시값 계산"""
-    if not os.path.exists(file_path):
-        return None
-    
+# ----------- 자동 업데이트 시스템 -------------
+
+
+def calculate_file_hash(file_path: Path) -> str:
+    """파일의 SHA256 해시 계산"""
     sha256_hash = hashlib.sha256()
     try:
         with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
+            for byte_block in iter(lambda: f.read(65536), b""):
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     except Exception as e:
-        print(f"해시 계산 실패: {file_path} - {e}")
+        print(f"해시 계산 실패 ({file_path}): {e}")
         return None
 
-def get_latest_release_info():
-    """GitHub Releases에서 최신 릴리스 정보 가져오기"""
-    try:
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO_OWNER}/{GITHUB_REPO_NAME}/releases/latest"
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        
-        release_data = response.json()
-        version = release_data["tag_name"].replace("v", "")
-        assets = release_data["assets"]
-        
-        return version, assets
-        
-    except Exception as e:
-        print(f"릴리스 정보 가져오기 실패: {e}")
-        return None, None
 
-def download_manifest_from_release(assets):
-    """Releases의 manifest.json 다운로드"""
+def get_remote_manifest(repo_owner: str, repo_name: str, branch: str = "main") -> dict:
+    """GitHub 리포지토리에서 manifest.json 가져오기"""
+    manifest_url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/manifest.json"
+    
     try:
-        manifest_asset = None
-        
-        # manifest.json 찾기
-        for asset in assets:
-            if asset["name"] == "manifest.json":
-                manifest_asset = asset
-                break
-        
-        if not manifest_asset:
-            print("manifest.json을 찾을 수 없습니다.")
-            return None
-        
-        # manifest.json 다운로드
-        response = requests.get(manifest_asset["browser_download_url"], timeout=10)
+        response = requests.get(manifest_url, timeout=10)
         response.raise_for_status()
-        
         manifest = response.json()
+        print(f"원격 매니페스트 로드 완료: {len(manifest.get('files', []))}개 파일")
         return manifest
-        
     except Exception as e:
-        print(f"manifest.json 다운로드 실패: {e}")
+        print(f"원격 매니페스트 로드 실패: {e}")
         return None
 
-def check_for_updates(progress_callback=None):
-    """GitHub Releases에서 업데이트 확인"""
-    try:
-        # 최신 릴리스 정보 가져오기
-        remote_version, assets = get_latest_release_info()
-        
-        if not remote_version or not assets:
-            return False, None, []
-        
-        print(f"원격 버전: {remote_version}, 현재 버전: {CURRENT_VERSION}")
-        
-        # 버전 비교
-        if remote_version <= CURRENT_VERSION:
-            if progress_callback:
-                progress_callback(1, 1, "최신 버전")
-            return False, None, []
-        
-        # manifest.json 다운로드
-        manifest = download_manifest_from_release(assets)
-        
-        if not manifest:
-            return False, None, []
-        
-        # 업데이트가 필요한 파일 목록
-        files_to_update = []
-        
-        if getattr(sys, 'frozen', False):
-            base_dir = Path(sys.executable).parent
-        else:
-            base_dir = Path(__file__).parent
-        
-        manifest_files = manifest.get("files", {})
-        total_files = len(manifest_files)
-        current_file = 0
-        
-        for filename, file_info in manifest_files.items():
-            current_file += 1
-            
-            # 진행 상황 콜백
-            if progress_callback:
-                progress_callback(current_file, total_files, filename)
-            
-            local_file = base_dir / filename
-            remote_hash = file_info.get("sha256")
-            
-            # 로컬 파일이 없거나 해시가 다르면 업데이트 필요
-            if not local_file.exists():
-                files_to_update.append((filename, file_info))
-                print(f"파일 없음: {filename}")
-            else:
-                local_hash = calculate_file_hash(local_file)
-                if local_hash != remote_hash:
-                    files_to_update.append((filename, file_info))
-                    print(f"해시 불일치: {filename}")
-                else:
-                    print(f"최신 상태: {filename}")
-        
-        return True, remote_version, files_to_update
-        
-    except Exception as e:
-        print(f"업데이트 확인 실패: {e}")
-        return False, None, []
 
-def download_file(url, destination):
-    """파일 다운로드"""
+def get_local_manifest(app_dir: Path) -> dict:
+    """로컬 manifest.json 가져오기"""
+    manifest_file = app_dir / "manifest.json"
+    
+    if not manifest_file.exists():
+        print("로컬 매니페스트 없음")
+        return {"version": "0.0.0", "files": []}
+    
     try:
-        print(f"다운로드 중: {url}")
-        response = requests.get(url, stream=True, timeout=30)
+        with open(manifest_file, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        print(f"로컬 매니페스트 로드 완료: v{manifest.get('version', '0.0.0')}")
+        return manifest
+    except Exception as e:
+        print(f"로컬 매니페스트 로드 실패: {e}")
+        return {"version": "0.0.0", "files": []}
+
+
+def save_local_manifest(app_dir: Path, manifest: dict):
+    """로컬 manifest.json 저장"""
+    manifest_file = app_dir / "manifest.json"
+    
+    try:
+        with open(manifest_file, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        print(f"로컬 매니페스트 저장 완료: v{manifest.get('version', '0.0.0')}")
+    except Exception as e:
+        print(f"로컬 매니페스트 저장 실패: {e}")
+
+
+def compare_manifests(local_manifest: dict, remote_manifest: dict, app_dir: Path, 
+                      progress_callback=None) -> list:
+    """매니페스트 비교 및 업데이트 필요 파일 목록 반환"""
+    local_files = {f['path']: f['hash'] for f in local_manifest.get('files', [])}
+    remote_files = {f['path']: f['hash'] for f in remote_manifest.get('files', [])}
+    
+    files_to_update = []
+    total_files = len(remote_files)
+    
+    if progress_callback:
+        progress_callback("파일 유효성 검사 중", 0, "", "check")
+    
+    for i, (path, remote_hash) in enumerate(remote_files.items(), start=1):
+        local_hash = local_files.get(path)
+        file_path = app_dir / path
+        
+        if not file_path.exists():
+            files_to_update.append({
+                'path': path,
+                'hash': remote_hash,
+                'reason': '파일 없음'
+            })
+            print(f"업데이트 필요: {path} (파일 없음)")
+        elif local_hash != remote_hash:
+            actual_hash = calculate_file_hash(file_path)
+            if actual_hash != remote_hash:
+                files_to_update.append({
+                    'path': path,
+                    'hash': remote_hash,
+                    'reason': '해시 불일치'
+                })
+                print(f"업데이트 필요: {path} (해시 불일치)")
+        
+        if progress_callback:
+            progress = i / total_files
+            progress_callback("파일 유효성 검사 중", progress, "", "check")
+    
+    if progress_callback:
+        progress_callback("파일 유효성 검사 중", 1.0, f"{total_files}개 파일 검사 완료", "check")
+    
+    return files_to_update
+
+
+def download_file_from_github(repo_owner: str, repo_name: str, file_path: str, 
+                               dest_path: Path, branch: str = "main") -> bool:
+    """GitHub에서 개별 파일 다운로드"""
+    raw_url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/{file_path}"
+    
+    try:
+        response = requests.get(raw_url, timeout=30)
         response.raise_for_status()
         
-        # 임시 파일로 다운로드
-        temp_file = destination.with_suffix(destination.suffix + '.tmp')
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
         
-        with open(temp_file, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
+        with open(dest_path, 'wb') as f:
+            f.write(response.content)
         
-        # 다운로드 완료 후 원본 파일명으로 변경
-        if temp_file.exists():
-            if destination.exists():
-                destination.unlink()
-            temp_file.rename(destination)
-        
-        print(f"다운로드 완료: {destination.name}")
+        print(f"다운로드 완료: {file_path}")
         return True
-        
     except Exception as e:
-        print(f"다운로드 실패: {e}")
+        print(f"다운로드 실패 ({file_path}): {e}")
         return False
 
-def create_updater_script(base_dir, exe_files):
-    """업데이터 배치 스크립트 생성 및 실행"""
+
+def update_application(repo_owner: str, repo_name: str, app_dir: Path, 
+                       progress_callback=None, branch: str = "main") -> bool:
+    """애플리케이션 자동 업데이트"""
     try:
-        current_exe = Path(sys.executable)
-        updater_script = base_dir / "updater.bat"
+        if progress_callback:
+            progress_callback("업데이트 확인 중", 0, "", "check")
         
-        # 배치 파일 내용 생성
-        bat_lines = ["@echo off", "timeout /t 2 /nobreak > nul"]
+        remote_manifest = get_remote_manifest(repo_owner, repo_name, branch)
+        if not remote_manifest:
+            print("원격 매니페스트를 가져올 수 없습니다")
+            if progress_callback:
+                progress_callback("업데이트 확인 중", 1.0, "원격 매니페스트 로드 실패", "check")
+            return False
         
-        for exe_file in exe_files:
-            old_exe = base_dir / exe_file
-            new_exe = base_dir / exe_file.replace(".exe", "_new.exe")
-            backup_exe = base_dir / exe_file.replace(".exe", "_backup.exe")
+        local_manifest = get_local_manifest(app_dir)
+        
+        local_version = local_manifest.get('version', '0.0.0')
+        remote_version = remote_manifest.get('version', '0.0.0')
+        
+        print(f"로컬 버전: v{local_version}")
+        print(f"원격 버전: v{remote_version}")
+        
+        if progress_callback:
+            progress_callback("업데이트 확인 중", 1.0, f"원격 버전: v{remote_version}", "check")
+        
+        files_to_update = compare_manifests(local_manifest, remote_manifest, app_dir, progress_callback)
+        
+        if not files_to_update:
+            print("업데이트 필요한 파일 없음")
+            return False
+        
+        print(f"업데이트 필요 파일: {len(files_to_update)}개")
+        
+        if progress_callback:
+            progress_callback("새로운 파일 발견", 0, "", "found")
+            time.sleep(0.1)
+            progress_callback("새로운 파일 발견", 1.0, f"{len(files_to_update)}개 파일 업데이트 필요", "found")
+            time.sleep(0.3)
+        
+        if progress_callback:
+            progress_callback("새로운 파일 다운로드 중", 0, "", "download")
+        
+        success_count = 0
+        total_count = len(files_to_update)
+        
+        for i, file_info in enumerate(files_to_update):
+            file_path = file_info['path']
+            dest_path = app_dir / file_path
             
-            bat_lines.append(f'if exist "{old_exe}" move "{old_exe}" "{backup_exe}"')
-            bat_lines.append(f'move "{new_exe}" "{old_exe}"')
-            bat_lines.append(f'if exist "{backup_exe}" del "{backup_exe}"')
+            print(f"업데이트 중 ({i+1}/{total_count}): {file_path}")
+            
+            if download_file_from_github(repo_owner, repo_name, file_path, dest_path, branch):
+                downloaded_hash = calculate_file_hash(dest_path)
+                if downloaded_hash == file_info['hash']:
+                    success_count += 1
+                    print(f"  ✓ 검증 완료")
+                else:
+                    print(f"  ✗ 해시 불일치")
+            
+            if progress_callback:
+                progress = (i + 1) / total_count
+                progress_callback("새로운 파일 다운로드 중", progress, "", "download")
         
-        bat_lines.append(f'start "" "{current_exe}"')
-        bat_lines.append('del "%~f0"')
+        if progress_callback:
+            progress_callback("새로운 파일 다운로드 중", 1.0, 
+                            f"{success_count}개 파일 다운로드 완료", "download")
         
-        bat_content = "\n".join(bat_lines)
+        if success_count > 0:
+            save_local_manifest(app_dir, remote_manifest)
+            print(f"업데이트 완료: {success_count}/{total_count} 파일")
+            return True
         
-        with open(updater_script, 'w', encoding='cp949') as f:
-            f.write(bat_content)
-        
-        # 배치 파일 실행 후 프로그램 종료
-        subprocess.Popen([str(updater_script)], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        sys.exit(0)
+        return False
         
     except Exception as e:
-        print(f"업데이터 스크립트 생성 실패: {e}")
+        print(f"업데이트 실패: {e}")
+        return False
 
 
-# ----------- poppler 설치/경로 준비 -------------
+def check_and_update_application(unified_popup, repo_owner: str, repo_name: str, branch: str = "main"):
+    """애플리케이션 업데이트 확인 및 실행"""
+    if getattr(sys, 'frozen', False):
+        app_dir = Path(sys.executable).parent
+    else:
+        app_dir = Path(__file__).parent
+    
+    result = {"updated": False, "error": None}
+    
+    try:
+        unified_popup.safe_add_log("→ 업데이트 확인 중...", is_progress=False)
+        time.sleep(0.3)
+        
+        def progress_callback(status, progress, detail, step_name):
+            try:
+                unified_popup.safe_update_status(status, progress, detail, step_name)
+            except:
+                pass
+        
+        updated = update_application(repo_owner, repo_name, app_dir, progress_callback, branch)
+        
+        if updated:
+            unified_popup.safe_add_log("", is_progress=False)
+            unified_popup.safe_add_log("  ✓ 업데이트 완료", is_progress=False)
+            time.sleep(0.5)
+            unified_popup.safe_add_log("  ✓ 프로그램을 다시 시작해주세요", is_progress=False)
+            result["updated"] = True
+        else:
+            unified_popup.safe_add_log("", is_progress=False)
+            unified_popup.safe_add_log("  ✓ 최신 버전입니다", is_progress=False)
+        
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"업데이트 오류: {e}")
+        try:
+            unified_popup.safe_add_log(f"  ✗ 오류 발생: {str(e)}", is_progress=False)
+        except:
+            print(f"로그 표시 실패: {e}")
+    
+    return result
+
+
+
+# ----------- Poppler 설치 및 경로 준비 -------------
+
 
 def get_latest_poppler_download_url():
     api_url = "https://api.github.com/repos/oschwartz10612/poppler-windows/releases/latest"
@@ -492,107 +450,267 @@ def get_latest_poppler_download_url():
             return asset["browser_download_url"], asset["name"]
     return None, None
 
+
 def find_poppler_folder(base_dir: Path):
     for folder in base_dir.iterdir():
         if folder.is_dir() and "poppler" in folder.name.lower():
             bin_path = folder / "Library" / "bin"
             if bin_path.exists():
-                return folder.name, str(bin_path)
+                match = re.search(r'(\d+\.\d+(?:\.\d+)?)', folder.name)
+                if match:
+                    version = "v" + match.group(1)
+                else:
+                    version = folder.name
+                return version, str(bin_path)
     return None, None
 
-def download_and_extract_poppler(dest_folder: Path):
+
+def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
+    """Poppler 다운로드 및 압축 해제"""
+    if progress_callback:
+        progress_callback("Poppler 다운로드 정보 확인 중", 0, "", "check")
+    
     download_url, filename = get_latest_poppler_download_url()
     if not download_url:
         raise RuntimeError("Poppler 윈도우용 최신 zip 파일을 찾을 수 없습니다.")
 
+    if progress_callback:
+        progress_callback("Poppler 다운로드 정보 확인 중", 1.0, "다운로드 URL 확인 완료", "check")
+
     zip_path = dest_folder / filename
 
-    print(f"Poppler 다운로드 중: {download_url}")
+    if progress_callback:
+        progress_callback("Poppler 다운로드 중", 0, "", "download")
+
     with requests.get(download_url, stream=True) as r:
         r.raise_for_status()
+        total_size = int(r.headers.get('content-length', 0))
+        downloaded = 0
+        last_reported = 0
+        
         with open(zip_path, 'wb') as f:
-            shutil.copyfileobj(r.raw, f)
+            for chunk in r.iter_content(chunk_size=65536):
+                f.write(chunk)
+                downloaded += len(chunk)
+                
+                if progress_callback and total_size > 0:
+                    percent = (downloaded / total_size) * 100
+                    if percent - last_reported >= 1.0 or downloaded == total_size:
+                        progress = downloaded / total_size
+                        progress_callback("Poppler 다운로드 중", progress, "", "download")
+                        last_reported = percent
+
+    if progress_callback:
+        progress_callback("Poppler 다운로드 중", 1.0, f"{filename} 다운로드 완료", "download")
+
+    if progress_callback:
+        progress_callback("Poppler 압축 해제 중", 0, "", "extract")
 
     release_folder_name = filename.replace(".zip", "")
     release_folder = dest_folder / release_folder_name
     if release_folder.exists():
         shutil.rmtree(release_folder)
 
-    print(f"Poppler 압축 해제 중: {dest_folder}")
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(dest_folder)
+        members = zip_ref.namelist()
+        total_files = len(members)
+        last_reported = 0
+        
+        for i, member in enumerate(members, start=1):
+            zip_ref.extract(member, dest_folder)
+            
+            percent = (i / total_files) * 100
+            if progress_callback and (percent - last_reported >= 1.0 or i == total_files):
+                progress = i / total_files
+                progress_callback("Poppler 압축 해제 중", progress, "", "extract")
+                last_reported = percent
 
     os.remove(zip_path)
-    print(f"Poppler 준비 완료: {dest_folder}")
 
-    match = re.search(r'Release-([\d\.]+)', release_folder_name)
-    if not match:
-        raise RuntimeError("Release 폴더명에서 버전 정보를 추출할 수 없습니다.")
-    version_str = match.group(1)
+    if progress_callback:
+        progress_callback("Poppler 압축 해제 중", 1.0, f"{total_files}개 파일 압축 해제 완료", "extract")
 
-    poppler_bin_path = release_folder / f"poppler-{version_str}" / "Library" / "bin"
-    if not poppler_bin_path.exists():
-        raise RuntimeError(f"Poppler bin 폴더가 없습니다: {poppler_bin_path}")
-
-    return poppler_bin_path
-
-def prepare_poppler_path():
-    base_dir = Path(os.path.abspath(os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)))
-
-    folder_name, poppler_bin_path = find_poppler_folder(base_dir)
-    if poppler_bin_path:
-        print(f"기존 poppler 폴더 발견: {folder_name}, 경로: {poppler_bin_path}")
-        return poppler_bin_path
-
-    try:
-        poppler_bin_path = download_and_extract_poppler(base_dir)
-    except Exception as e:
-        print(f"Poppler 다운로드/압축 해제 실패: {e}")
+    def find_bin_folder(base_path: Path) -> Path:
+        for root, dirs, files in os.walk(base_path):
+            root_path = Path(root)
+            if root_path.name == "bin" and root_path.parent.name == "Library":
+                if (root_path / "pdftoppm.exe").exists():
+                    return root_path
         return None
+    
+    poppler_bin_path = find_bin_folder(dest_folder)
+    
+    if poppler_bin_path and poppler_bin_path.exists():
+        if progress_callback:
+            progress_callback("Poppler 설치 완료", 1.0, "PDF → JPG 변환기를 실행합니다", "complete")
+        return poppler_bin_path
+    
+    raise RuntimeError(f"Poppler bin 폴더를 찾을 수 없습니다.")
 
-    folder_name, found_bin_path = find_poppler_folder(base_dir)
-    if found_bin_path:
-        print(f"다운로드 후 poppler 폴더 발견: {folder_name}, 경로: {found_bin_path}")
-        return found_bin_path
 
-    print("Poppler 폴더를 찾을 수 없습니다. None 반환")
-    return None
+def prepare_poppler_path_with_ui(unified_popup):
+    """UI와 함께 Poppler 경로 준비"""
+    base_dir = Path("C:/PDF TO JPG 변환기")
+    
+    try:
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return None, f"설치 폴더를 생성할 수 없습니다: {e}"
+    
+    result = {"path": None, "error": None}
+    
+    try:
+        unified_popup.safe_add_log("", is_progress=False)
+        unified_popup.safe_add_log("→ Poppler 유효성 검사 중...", is_progress=False)
+        time.sleep(0.3)
+        
+        latest_version = None
+        try:
+            download_url, latest_filename = get_latest_poppler_download_url()
+            if latest_filename:
+                latest_match = re.search(r'(\d+\.\d+\.\d+)', latest_filename)
+                if latest_match:
+                    latest_version = latest_match.group(1)
+                    print(f"최신 버전: {latest_version}")
+        except Exception as e:
+            print(f"최신 버전 확인 실패: {e}")
+            latest_version = None
+        
+        version, poppler_bin_path = find_poppler_folder(base_dir)
+        
+        if poppler_bin_path and version:
+            unified_popup.safe_add_log(f"  ✓ 검사 완료", is_progress=False)
+            time.sleep(0.1)
+            unified_popup.safe_add_log(f"  ✓ 설치된 버전: {version}", is_progress=False)
+            time.sleep(0.1)
+            
+            current_version_num = version.replace("v", "")
+            
+            needs_update = False
+            if latest_version and current_version_num != latest_version:
+                needs_update = True
+            
+            if needs_update:
+                unified_popup.safe_add_log(f"  ! 최신 버전: v{latest_version}", is_progress=False)
+                time.sleep(0.1)
+                unified_popup.safe_add_log(f"  ! 이전 버전이 설치되어 있습니다", is_progress=False)
+                time.sleep(0.1)
+                unified_popup.safe_add_log(f"  ! 이전 버전을 삭제합니다", is_progress=False)
+                time.sleep(0.2)
+                
+                for folder in base_dir.iterdir():
+                    if folder.is_dir() and "poppler" in folder.name.lower():
+                        try:
+                            shutil.rmtree(folder)
+                            unified_popup.safe_add_log(f"  ✓ {folder.name} 삭제 완료", is_progress=False)
+                            time.sleep(0.1)
+                        except Exception as e:
+                            unified_popup.safe_add_log(f"  ✗ 삭제 실패: {e}", is_progress=False)
+                
+                unified_popup.safe_add_log(f"  ! 최신 버전을 다운로드합니다", is_progress=False)
+                time.sleep(0.2)
+                
+                def progress_callback(status, progress, detail, step_name):
+                    try:
+                        unified_popup.safe_update_status(status, progress, detail, step_name)
+                    except:
+                        pass
+                
+                poppler_path = download_and_extract_poppler(base_dir, progress_callback)
+                result["path"] = poppler_path
+                time.sleep(0.5)
+                
+            else:
+                if latest_version:
+                    unified_popup.safe_add_log(f"  ✓ 최신 버전이 설치되어 있습니다", is_progress=False)
+                else:
+                    unified_popup.safe_add_log(f"  ✓ Poppler가 설치되어 있습니다", is_progress=False)
+                time.sleep(0.1)
+                
+                result["path"] = poppler_bin_path
+                
+        else:
+            unified_popup.safe_add_log(f"  ✓ 검사 완료", is_progress=False)
+            time.sleep(0.1)
+            unified_popup.safe_add_log(f"  ! Poppler를 찾을 수 없습니다", is_progress=False)
+            time.sleep(0.1)
+            unified_popup.safe_add_log(f"  ! Poppler를 다운로드합니다", is_progress=False)
+            time.sleep(0.2)
+            
+            def progress_callback(status, progress, detail, step_name):
+                try:
+                    unified_popup.safe_update_status(status, progress, detail, step_name)
+                except:
+                    pass
+            
+            poppler_path = download_and_extract_poppler(base_dir, progress_callback)
+            result["path"] = poppler_path
+            time.sleep(0.5)
+        
+    except Exception as e:
+        result["error"] = str(e)
+        print(f"설치 오류: {e}")
+        try:
+            unified_popup.safe_add_log(f"  ✗ 오류 발생: {str(e)}", is_progress=False)
+        except:
+            print(f"로그 표시 실패: {e}")
+    
+    return result["path"], result["error"]
 
 
-# ----------- 변환 진행 팝업 -------------
+
+# ----------- 진행 팝업 -------------
+
 
 class ProgressPopup(ctk.CTkToplevel):
     def __init__(self, parent, total_files, total_pages):
         super().__init__(parent)
         self.title("진행 중")
-        self.geometry("450x240")
+        self.geometry("450x170")
         self.resizable(False, False)
+        
+        self.update_idletasks()
+        
+        parent_x = parent.winfo_x()
+        parent_y = parent.winfo_y()
+        parent_width = parent.winfo_width()
+        parent_height = parent.winfo_height()
+        
+        popup_width = 450
+        popup_height = 170
+        
+        x = parent_x + (parent_width - popup_width) // 2
+        y = parent_y + (parent_height - popup_height) // 2
+        
+        self.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+        
         self.grab_set()
+        
+        icon_path = get_icon_path()
+        if icon_path:
+            self.iconbitmap(icon_path)
 
         self.total_files = total_files
         self.total_pages = total_pages
         self.completed_files = 0
         self.completed_pages = 0
+        
+        self._auto_close_id = None
 
-        # 파일 진행 레이블
         self.file_label = ctk.CTkLabel(self, text=f"파일: 0 / {total_files}")
         self.file_label.pack(pady=(10, 5))
 
-        # 파일 프로그레스바
         self.file_progress = ctk.CTkProgressBar(self, width=400)
         self.file_progress.pack(pady=5)
         self.file_progress.set(0)
 
-        # 페이지 진행 레이블
         self.page_label = ctk.CTkLabel(self, text=f"페이지: 0 / {total_pages}")
         self.page_label.pack(pady=(10, 5))
 
-        # 페이지 프로그레스바
         self.page_progress = ctk.CTkProgressBar(self, width=400)
         self.page_progress.pack(pady=5)
         self.page_progress.set(0)
 
-        # 취소 버튼
         self.cancel_button = ctk.CTkButton(self, text="취소", command=self._on_cancel)
         self.cancel_button.pack(pady=10)
 
@@ -620,13 +738,27 @@ class ProgressPopup(ctk.CTkToplevel):
         self.page_progress.set(ratio)
         self.update_idletasks()
 
+    def _close_window(self):
+        if self._auto_close_id:
+            self.after_cancel(self._auto_close_id)
+            self._auto_close_id = None
+        self.destroy()
+
+    def _update_button_countdown(self, seconds):
+        if seconds > 0:
+            self.cancel_button.configure(text=f"확인 ({seconds}초)")
+            self._auto_close_id = self.after(1000, lambda: self._update_button_countdown(seconds - 1))
+        else:
+            self._close_window()
+
     def show_completion(self):
-        self.cancel_button.configure(text="확인", state="normal", command=self.destroy)
-        messagebox.showinfo("변환 완료", 
-                          f"총 파일 {self.completed_files}개, 총 페이지 {self.completed_pages}페이지를 변환 완료하였습니다.")
+        self.cancel_button.configure(text="확인 (3초)", state="normal", command=self._close_window)
+        self._auto_close_id = self.after(1000, lambda: self._update_button_countdown(2))
+
 
 
 # ----------- PDF→JPG 변환기 -------------
+
 
 class PDFtoJPGApp(ctk.CTkFrame):
     def __init__(self, master):
@@ -634,96 +766,185 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self.pack(fill="both", expand=True)
         self.master = master
         self.master.title(f"PDF → JPG 변환기 [made by. 류호준]")
-        self.master.geometry("600x250")
+        self.master.geometry("600x300")
 
-        # 아이콘 설정 (exe로 빌드 시 경로 고려)
-        if getattr(sys, 'frozen', False):
-            icon_path = Path(sys.executable).parent / "icon.ico"
-        else:
-            icon_path = Path(__file__).parent / "icon.ico"
+        # 메인 창 숨기기
+        self.master.withdraw()
 
-        if icon_path.exists():
-            self.master.iconbitmap(str(icon_path))
+        icon_path = get_icon_path()
+        if icon_path:
+            self.master.iconbitmap(icon_path)
+        
+        # ============ 통합 초기화 (업데이트 + Poppler) ============
+        unified_popup = UnifiedInstallPopup(self.master)
+        
+        result = {"update_done": False, "poppler_path": None, "should_close": False, "restart_required": False}
+        
+        def init_thread():
+            try:
+                # GitHub 리포지토리 정보
+                REPO_OWNER = "c-closed"  # 본인의 GitHub 사용자명으로 변경
+                REPO_NAME = "P2J"
+                BRANCH = "main"
+                
+                # 1. 애플리케이션 업데이트 확인
+                update_result = check_and_update_application(unified_popup, REPO_OWNER, REPO_NAME, BRANCH)
+                result["update_done"] = update_result.get("updated", False)
+                
+                time.sleep(0.5)
+                
+                # 2. Poppler 준비
+                poppler_path, poppler_error = prepare_poppler_path_with_ui(unified_popup)
+                result["poppler_path"] = poppler_path
+                
+                if result["update_done"]:
+                    unified_popup.safe_add_log("", is_progress=False)
+                    unified_popup.safe_add_log("  ✓ 업데이트 완료 - 재시작 필요", is_progress=False)
+                    result["restart_required"] = True
+                else:
+                    unified_popup.safe_add_log("", is_progress=False)
+                    unified_popup.safe_add_log("  ✓ 3초 후 프로그램이 시작됩니다", is_progress=False)
+                    time.sleep(1.0)
+                    unified_popup.safe_add_log("  ✓ 2초 후 프로그램이 시작됩니다", is_progress=True)
+                    time.sleep(1.0)
+                    unified_popup.safe_add_log("  ✓ 1초 후 프로그램이 시작됩니다", is_progress=True)
+                    time.sleep(1.0)
+                
+                result["should_close"] = True
+                
+            except Exception as e:
+                print(f"초기화 오류: {e}")
+                result["should_close"] = True
+        
+        def start_init():
+            thread = threading.Thread(target=init_thread, daemon=True)
+            thread.start()
+        
+        unified_popup.after(100, start_init)
+        
+        def check_close():
+            if result["should_close"]:
+                try:
+                    unified_popup.close_window()
+                except:
+                    pass
+            else:
+                try:
+                    unified_popup.after(100, check_close)
+                except:
+                    pass
+        
+        unified_popup.after(500, check_close)
+        
+        try:
+            self.master.wait_window(unified_popup)
+        except:
+            pass
+        
+        # 업데이트 완료 시 재시작 요청
+        if result["restart_required"]:
+            messagebox.showinfo("업데이트 완료", "애플리케이션이 업데이트되었습니다.\n프로그램을 다시 시작해주세요.")
+            self.master.destroy()
+            return
+        
+        # Poppler 경로 확인
+        if not result["poppler_path"]:
+            messagebox.showerror("오류", "Poppler를 준비하지 못했습니다. 프로그램을 종료합니다.")
+            self.master.destroy()
+            return
+        
+        self.poppler_path = result["poppler_path"]
+        # =========================================
 
-        self.drop_area = ctk.CTkTextbox(self, height=100)
+        self.drop_area = ctk.CTkTextbox(self, height=220)
         self.drop_area.pack(padx=10, pady=10, fill="x")
+        self.drop_area.configure(state="disabled")
 
-        # 버튼 프레임 생성
-        button_frame = ctk.CTkFrame(self)
-        button_frame.pack(pady=10)
+        control_container = ctk.CTkFrame(self, fg_color="transparent")
+        control_container.pack(pady=10, fill="x", padx=10)
 
-        # 파일 선택 버튼
-        self.select_button = ctk.CTkButton(button_frame, text="파일 선택", command=self.select_files, width=120)
-        self.select_button.grid(row=0, column=0, padx=5)
+        self.select_button = ctk.CTkButton(control_container, text="불러오기", command=self.select_files, width=100)
+        self.select_button.pack(side="left", padx=5)
 
-        # 목록 비우기 버튼
-        self.clear_button = ctk.CTkButton(button_frame, text="목록 비우기", command=self.clear_list, width=120)
-        self.clear_button.grid(row=0, column=1, padx=5)
+        self.remove_button = ctk.CTkButton(control_container, text="지우기", command=self.remove_selected, width=100)
+        self.remove_button.pack(side="left", padx=5)
 
-        # 변환하기 버튼
-        self.convert_button = ctk.CTkButton(button_frame, text="변환하기", command=self.start_conversion, width=120)
-        self.convert_button.grid(row=0, column=2, padx=5)
+        self.clear_button = ctk.CTkButton(control_container, text="비우기", command=self.clear_list, width=100)
+        self.clear_button.pack(side="left", padx=5)
 
-        # 버전 정보
-        version_label = ctk.CTkLabel(self, text=f"v{CURRENT_VERSION}", text_color="gray")
-        version_label.pack(pady=5)
+        self.convert_button = ctk.CTkButton(control_container, text="변환하기", command=self.start_conversion, width=100)
+        self.convert_button.pack(side="left", padx=5)
 
-        self.status_label = ctk.CTkLabel(self, text="", text_color="blue")
-        self.status_label.pack()
+        version_frame = ctk.CTkFrame(control_container)
+        version_frame.pack(side="right", padx=5)
+        
+        version_label = ctk.CTkLabel(version_frame, text="v1.0.0", text_color="black")
+        version_label.pack(padx=10, pady=5)
 
         self.pdf_files = []
         self._cancel_requested = False
         self.progress_popup = None
+        
+        # 메인 창 다시 표시
+        self.master.deiconify()
+        
+        self.master.update_idletasks()
+        x = (self.master.winfo_screenwidth() // 2) - (600 // 2)
+        y = (self.master.winfo_screenheight() // 2) - (300 // 2)
+        self.master.geometry(f"600x300+{x}+{y}")
 
-        self.install_dir = Path(os.path.abspath(os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)))
-        self.poppler_path = prepare_poppler_path()
-        if not self.poppler_path:
-            messagebox.showerror("오류", "poppler를 준비하지 못했습니다. 프로그램을 종료합니다.")
-            self.master.destroy()
-            return
-
-        # drag and drop binding to root window
         master.drop_target_register(DND_FILES)
         master.dnd_bind("<<Drop>>", self.on_drop)
 
     def select_files(self):
-        """파일 선택 다이얼로그"""
-        files = filedialog.askopenfilenames(
-            title="PDF 파일 선택",
-            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")]
-        )
-        
+        files = filedialog.askopenfilenames(title="PDF 파일 선택", filetypes=[("PDF files", "*.pdf")])
         for f in files:
             if f not in self.pdf_files:
                 self.pdf_files.append(f)
-        
         self.update_file_list()
 
+    def remove_selected(self):
+        if not self.pdf_files:
+            messagebox.showinfo("알림", "목록에 파일이 없습니다.")
+            return
+        
+        try:
+            self.drop_area.configure(state="normal")
+            cursor_position = self.drop_area.index("insert")
+            self.drop_area.configure(state="disabled")
+            
+            line_number = int(cursor_position.split('.')[0]) - 1
+            
+            if 0 <= line_number < len(self.pdf_files):
+                removed_file = Path(self.pdf_files[line_number]).name
+                if messagebox.askyesno("파일 제거", f"'{removed_file}'을(를) 목록에서 제거하시겠습니까?"):
+                    self.pdf_files.pop(line_number)
+                    self.update_file_list()
+            else:
+                messagebox.showwarning("경고", "유효한 파일을 선택해주세요.")
+        except Exception as e:
+            messagebox.showerror("오류", f"파일 제거 중 오류 발생: {e}")
+
     def clear_list(self):
-        """목록 비우기"""
         if self.pdf_files:
             if messagebox.askyesno("목록 비우기", "등록된 모든 파일을 목록에서 제거하시겠습니까?"):
                 self.pdf_files.clear()
-                self.drop_area.delete("0.0", "end")
-                self.status_label.configure(text="목록이 비워졌습니다.")
+                self.update_file_list()
         else:
             messagebox.showinfo("알림", "목록이 이미 비어있습니다.")
 
     def update_file_list(self):
-        """파일 목록 텍스트박스 업데이트"""
+        self.drop_area.configure(state="normal")
         self.drop_area.delete("0.0", "end")
         file_names = "\n".join([Path(f).name for f in self.pdf_files])
         self.drop_area.insert("0.0", file_names)
+        self.drop_area.configure(state="disabled")
 
     def on_drop(self, event):
         files = self.master.tk.splitlist(event.data)
         for f in files:
-            if f.lower().endswith(".pdf"):
-                if f not in self.pdf_files:
-                    self.pdf_files.append(f)
-            else:
-                messagebox.showwarning("알림", f"PDF 파일만 등록할 수 있습니다 : {f}")
-        
+            if f.lower().endswith(".pdf") and f not in self.pdf_files:
+                self.pdf_files.append(f)
         self.update_file_list()
 
     def start_conversion(self):
@@ -731,7 +952,6 @@ class PDFtoJPGApp(ctk.CTkFrame):
             messagebox.showwarning("경고", "등록된 PDF 파일이 없습니다.")
             return
 
-        # 파일별 페이지 수 계산
         from pdf2image.pdf2image import pdfinfo_from_path
         total_files = len(self.pdf_files)
         total_pages = sum(pdfinfo_from_path(pdf, poppler_path=self.poppler_path)["Pages"] for pdf in self.pdf_files)
@@ -747,7 +967,6 @@ class PDFtoJPGApp(ctk.CTkFrame):
     def convert_files(self):
         try:
             from pdf2image.pdf2image import pdfinfo_from_path
-            
             completed_files = 0
             completed_pages = 0
 
@@ -788,20 +1007,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
                 self.progress_popup.destroy()
 
 
-# ----------- 메인 실행 -------------
-
 if __name__ == "__main__":
-    # 임시 루트 창 생성 (숨김)
     root = TkinterDnD.Tk()
-    root.withdraw()  # 메인 창 숨기기
-    
-    # 업데이트 확인 창 표시
-    update_window = StartupUpdateWindow(root)
-    
-    # 업데이트 창이 닫힐 때까지 대기
-    root.wait_window(update_window)
-    
-    # 메인 창 표시
-    root.deiconify()
     app = PDFtoJPGApp(root)
     root.mainloop()
