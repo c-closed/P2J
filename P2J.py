@@ -930,10 +930,25 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self.convert_button.pack(side="left", padx=5)
 
 
+        # 로컬 manifest.json에서 버전 읽기
+        if getattr(sys, 'frozen', False):
+            app_dir = Path(sys.executable).parent
+        else:
+            app_dir = Path(__file__).parent
+        
+        local_manifest = get_local_manifest(app_dir)
+        version = local_manifest.get('version', None)
+        
+        if version and version != "0.0.0":
+            version_text = f"v{version}"
+        else:
+            version_text = "버전 확인 불가"
+
+
         version_frame = ctk.CTkFrame(control_container)
         version_frame.pack(side="right", padx=5)
         
-        version_label = ctk.CTkLabel(version_frame, text="v1.0.0", text_color="black")
+        version_label = ctk.CTkLabel(version_frame, text=version_text, text_color="black")
         version_label.pack(padx=10, pady=5)
 
 
