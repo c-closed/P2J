@@ -18,13 +18,16 @@ from tkinter import messagebox, filedialog
 import time
 
 
+
 # 테마 설정 (앱 시작 전에 설정)
 ctk.set_default_color_theme("blue")
 ctk.set_appearance_mode("system")
 
 
 
+
 # ----------- 아이콘 경로 가져오기 함수 -------------
+
 
 
 def get_icon_path():
@@ -37,6 +40,7 @@ def get_icon_path():
     if icon_path.exists():
         return str(icon_path)
     return None
+
 
 
 def set_window_icon(window, icon_path):
@@ -67,7 +71,9 @@ def set_window_icon(window, icon_path):
 
 
 
+
 # ----------- 통합 설치/업데이트 팝업 -------------
+
 
 
 class UnifiedInstallPopup(ctk.CTkToplevel):
@@ -178,6 +184,7 @@ class UnifiedInstallPopup(ctk.CTkToplevel):
         except Exception as e:
             print(f"safe_add_log 실패: {e}")
 
+
     def close_window(self):
         """창 닫기"""
         try:
@@ -189,7 +196,9 @@ class UnifiedInstallPopup(ctk.CTkToplevel):
 
 
 
+
 # ----------- 자동 업데이트 시스템 -------------
+
 
 
 def calculate_file_hash(file_path: Path) -> str:
@@ -205,6 +214,7 @@ def calculate_file_hash(file_path: Path) -> str:
         return None
 
 
+
 def get_remote_manifest(repo_owner: str, repo_name: str, branch: str = "main") -> dict:
     """GitHub 리포지토리에서 manifest.json 가져오기"""
     manifest_url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/manifest.json"
@@ -218,6 +228,7 @@ def get_remote_manifest(repo_owner: str, repo_name: str, branch: str = "main") -
     except Exception as e:
         print(f"원격 매니페스트 로드 실패: {e}")
         return None
+
 
 
 def get_local_manifest(app_dir: Path) -> dict:
@@ -238,6 +249,7 @@ def get_local_manifest(app_dir: Path) -> dict:
         return {"version": "0.0.0", "files": []}
 
 
+
 def save_local_manifest(app_dir: Path, manifest: dict):
     """로컬 manifest.json 저장"""
     manifest_file = app_dir / "manifest.json"
@@ -248,6 +260,7 @@ def save_local_manifest(app_dir: Path, manifest: dict):
         print(f"로컬 매니페스트 저장 완료: v{manifest.get('version', '0.0.0')}")
     except Exception as e:
         print(f"로컬 매니페스트 저장 실패: {e}")
+
 
 
 def compare_manifests(local_manifest: dict, remote_manifest: dict, app_dir: Path, 
@@ -293,6 +306,7 @@ def compare_manifests(local_manifest: dict, remote_manifest: dict, app_dir: Path
     return files_to_update
 
 
+
 def download_file_from_github(repo_owner: str, repo_name: str, file_path: str, 
                                dest_path: Path, branch: str = "main") -> bool:
     """GitHub에서 개별 파일 다운로드"""
@@ -312,6 +326,7 @@ def download_file_from_github(repo_owner: str, repo_name: str, file_path: str,
     except Exception as e:
         print(f"다운로드 실패 ({file_path}): {e}")
         return False
+
 
 
 def update_application(repo_owner: str, repo_name: str, app_dir: Path, 
@@ -393,6 +408,7 @@ def update_application(repo_owner: str, repo_name: str, app_dir: Path,
         return False
 
 
+
 def check_and_update_application(unified_popup, repo_owner: str, repo_name: str, branch: str = "main"):
     """애플리케이션 업데이트 확인 및 실행"""
     if getattr(sys, 'frozen', False):
@@ -415,13 +431,11 @@ def check_and_update_application(unified_popup, repo_owner: str, repo_name: str,
         updated = update_application(repo_owner, repo_name, app_dir, progress_callback, branch)
         
         if updated:
-            unified_popup.safe_add_log("", is_progress=False)
             unified_popup.safe_add_log("  ✓ 업데이트 완료", is_progress=False)
             time.sleep(0.5)
             unified_popup.safe_add_log("  ✓ 프로그램을 다시 시작해주세요", is_progress=False)
             result["updated"] = True
         else:
-            unified_popup.safe_add_log("", is_progress=False)
             unified_popup.safe_add_log("  ✓ 최신 버전입니다", is_progress=False)
         
     except Exception as e:
@@ -436,7 +450,9 @@ def check_and_update_application(unified_popup, repo_owner: str, repo_name: str,
 
 
 
+
 # ----------- Poppler 설치 및 경로 준비 -------------
+
 
 
 def get_latest_poppler_download_url():
@@ -449,6 +465,7 @@ def get_latest_poppler_download_url():
         if asset["name"].lower().endswith(".zip"):
             return asset["browser_download_url"], asset["name"]
     return None, None
+
 
 
 def find_poppler_folder(base_dir: Path):
@@ -465,6 +482,7 @@ def find_poppler_folder(base_dir: Path):
     return None, None
 
 
+
 def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
     """Poppler 다운로드 및 압축 해제"""
     if progress_callback:
@@ -474,13 +492,17 @@ def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
     if not download_url:
         raise RuntimeError("Poppler 윈도우용 최신 zip 파일을 찾을 수 없습니다.")
 
+
     if progress_callback:
         progress_callback("Poppler 다운로드 정보 확인 중", 1.0, "다운로드 URL 확인 완료", "check")
 
+
     zip_path = dest_folder / filename
+
 
     if progress_callback:
         progress_callback("Poppler 다운로드 중", 0, "", "download")
+
 
     with requests.get(download_url, stream=True) as r:
         r.raise_for_status()
@@ -500,16 +522,20 @@ def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
                         progress_callback("Poppler 다운로드 중", progress, "", "download")
                         last_reported = percent
 
+
     if progress_callback:
         progress_callback("Poppler 다운로드 중", 1.0, f"{filename} 다운로드 완료", "download")
 
+
     if progress_callback:
         progress_callback("Poppler 압축 해제 중", 0, "", "extract")
+
 
     release_folder_name = filename.replace(".zip", "")
     release_folder = dest_folder / release_folder_name
     if release_folder.exists():
         shutil.rmtree(release_folder)
+
 
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         members = zip_ref.namelist()
@@ -525,10 +551,13 @@ def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
                 progress_callback("Poppler 압축 해제 중", progress, "", "extract")
                 last_reported = percent
 
+
     os.remove(zip_path)
+
 
     if progress_callback:
         progress_callback("Poppler 압축 해제 중", 1.0, f"{total_files}개 파일 압축 해제 완료", "extract")
+
 
     def find_bin_folder(base_path: Path) -> Path:
         for root, dirs, files in os.walk(base_path):
@@ -548,6 +577,7 @@ def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
     raise RuntimeError(f"Poppler bin 폴더를 찾을 수 없습니다.")
 
 
+
 def prepare_poppler_path_with_ui(unified_popup):
     """UI와 함께 Poppler 경로 준비"""
     base_dir = Path("C:/PDF TO JPG 변환기")
@@ -560,7 +590,6 @@ def prepare_poppler_path_with_ui(unified_popup):
     result = {"path": None, "error": None}
     
     try:
-        unified_popup.safe_add_log("", is_progress=False)
         unified_popup.safe_add_log("→ Poppler 유효성 검사 중...", is_progress=False)
         time.sleep(0.3)
         
@@ -659,7 +688,9 @@ def prepare_poppler_path_with_ui(unified_popup):
 
 
 
+
 # ----------- 진행 팝업 -------------
+
 
 
 class ProgressPopup(ctk.CTkToplevel):
@@ -690,6 +721,7 @@ class ProgressPopup(ctk.CTkToplevel):
         if icon_path:
             self.iconbitmap(icon_path)
 
+
         self.total_files = total_files
         self.total_pages = total_pages
         self.completed_files = 0
@@ -697,25 +729,32 @@ class ProgressPopup(ctk.CTkToplevel):
         
         self._auto_close_id = None
 
+
         self.file_label = ctk.CTkLabel(self, text=f"파일: 0 / {total_files}")
         self.file_label.pack(pady=(10, 5))
+
 
         self.file_progress = ctk.CTkProgressBar(self, width=400)
         self.file_progress.pack(pady=5)
         self.file_progress.set(0)
 
+
         self.page_label = ctk.CTkLabel(self, text=f"페이지: 0 / {total_pages}")
         self.page_label.pack(pady=(10, 5))
+
 
         self.page_progress = ctk.CTkProgressBar(self, width=400)
         self.page_progress.pack(pady=5)
         self.page_progress.set(0)
 
+
         self.cancel_button = ctk.CTkButton(self, text="취소", command=self._on_cancel)
         self.cancel_button.pack(pady=10)
 
+
         self.cancelled = False
         self.cancel_callback = None
+
 
     def _on_cancel(self):
         if messagebox.askyesno("작업 취소", "변환 작업을 정말 취소하시겠습니까?"):
@@ -724,12 +763,14 @@ class ProgressPopup(ctk.CTkToplevel):
                 self.cancel_callback()
             self.cancel_button.configure(state="disabled")
 
+
     def update_file_progress(self, completed_files):
         self.completed_files = completed_files
         self.file_label.configure(text=f"파일: {completed_files} / {self.total_files}")
         ratio = completed_files / self.total_files if self.total_files > 0 else 0
         self.file_progress.set(ratio)
         self.update_idletasks()
+
 
     def update_page_progress(self, completed_pages):
         self.completed_pages = completed_pages
@@ -738,11 +779,13 @@ class ProgressPopup(ctk.CTkToplevel):
         self.page_progress.set(ratio)
         self.update_idletasks()
 
+
     def _close_window(self):
         if self._auto_close_id:
             self.after_cancel(self._auto_close_id)
             self._auto_close_id = None
         self.destroy()
+
 
     def _update_button_countdown(self, seconds):
         if seconds > 0:
@@ -751,13 +794,16 @@ class ProgressPopup(ctk.CTkToplevel):
         else:
             self._close_window()
 
+
     def show_completion(self):
         self.cancel_button.configure(text="확인 (3초)", state="normal", command=self._close_window)
         self._auto_close_id = self.after(1000, lambda: self._update_button_countdown(2))
 
 
 
+
 # ----------- PDF→JPG 변환기 -------------
+
 
 
 class PDFtoJPGApp(ctk.CTkFrame):
@@ -768,8 +814,10 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self.master.title(f"PDF → JPG 변환기 [made by. 류호준]")
         self.master.geometry("600x300")
 
+
         # 메인 창 숨기기
         self.master.withdraw()
+
 
         icon_path = get_icon_path()
         if icon_path:
@@ -783,7 +831,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
         def init_thread():
             try:
                 # GitHub 리포지토리 정보
-                REPO_OWNER = "c-closed"  # 본인의 GitHub 사용자명으로 변경
+                REPO_OWNER = "c-closed"
                 REPO_NAME = "P2J"
                 BRANCH = "main"
                 
@@ -798,16 +846,16 @@ class PDFtoJPGApp(ctk.CTkFrame):
                 result["poppler_path"] = poppler_path
                 
                 if result["update_done"]:
-                    unified_popup.safe_add_log("", is_progress=False)
                     unified_popup.safe_add_log("  ✓ 업데이트 완료 - 재시작 필요", is_progress=False)
                     result["restart_required"] = True
                 else:
-                    unified_popup.safe_add_log("", is_progress=False)
+                    unified_popup.safe_add_log("  ✓ 최신 버전입니다", is_progress=False)
+                    time.sleep(0.3)
                     unified_popup.safe_add_log("  ✓ 3초 후 프로그램이 시작됩니다", is_progress=False)
                     time.sleep(1.0)
-                    unified_popup.safe_add_log("  ✓ 2초 후 프로그램이 시작됩니다", is_progress=True)
+                    unified_popup.safe_add_log("  ✓ 2초 후 프로그램이 시작됩니다", is_progress=False)
                     time.sleep(1.0)
-                    unified_popup.safe_add_log("  ✓ 1초 후 프로그램이 시작됩니다", is_progress=True)
+                    unified_popup.safe_add_log("  ✓ 1초 후 프로그램이 시작됩니다", is_progress=False)
                     time.sleep(1.0)
                 
                 result["should_close"] = True
@@ -856,30 +904,38 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self.poppler_path = result["poppler_path"]
         # =========================================
 
+
         self.drop_area = ctk.CTkTextbox(self, height=220)
         self.drop_area.pack(padx=10, pady=10, fill="x")
         self.drop_area.configure(state="disabled")
 
+
         control_container = ctk.CTkFrame(self, fg_color="transparent")
         control_container.pack(pady=10, fill="x", padx=10)
+
 
         self.select_button = ctk.CTkButton(control_container, text="불러오기", command=self.select_files, width=100)
         self.select_button.pack(side="left", padx=5)
 
+
         self.remove_button = ctk.CTkButton(control_container, text="지우기", command=self.remove_selected, width=100)
         self.remove_button.pack(side="left", padx=5)
+
 
         self.clear_button = ctk.CTkButton(control_container, text="비우기", command=self.clear_list, width=100)
         self.clear_button.pack(side="left", padx=5)
 
+
         self.convert_button = ctk.CTkButton(control_container, text="변환하기", command=self.start_conversion, width=100)
         self.convert_button.pack(side="left", padx=5)
+
 
         version_frame = ctk.CTkFrame(control_container)
         version_frame.pack(side="right", padx=5)
         
         version_label = ctk.CTkLabel(version_frame, text="v1.0.0", text_color="black")
         version_label.pack(padx=10, pady=5)
+
 
         self.pdf_files = []
         self._cancel_requested = False
@@ -893,8 +949,10 @@ class PDFtoJPGApp(ctk.CTkFrame):
         y = (self.master.winfo_screenheight() // 2) - (300 // 2)
         self.master.geometry(f"600x300+{x}+{y}")
 
+
         master.drop_target_register(DND_FILES)
         master.dnd_bind("<<Drop>>", self.on_drop)
+
 
     def select_files(self):
         files = filedialog.askopenfilenames(title="PDF 파일 선택", filetypes=[("PDF files", "*.pdf")])
@@ -902,6 +960,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
             if f not in self.pdf_files:
                 self.pdf_files.append(f)
         self.update_file_list()
+
 
     def remove_selected(self):
         if not self.pdf_files:
@@ -925,6 +984,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
         except Exception as e:
             messagebox.showerror("오류", f"파일 제거 중 오류 발생: {e}")
 
+
     def clear_list(self):
         if self.pdf_files:
             if messagebox.askyesno("목록 비우기", "등록된 모든 파일을 목록에서 제거하시겠습니까?"):
@@ -933,12 +993,14 @@ class PDFtoJPGApp(ctk.CTkFrame):
         else:
             messagebox.showinfo("알림", "목록이 이미 비어있습니다.")
 
+
     def update_file_list(self):
         self.drop_area.configure(state="normal")
         self.drop_area.delete("0.0", "end")
         file_names = "\n".join([Path(f).name for f in self.pdf_files])
         self.drop_area.insert("0.0", file_names)
         self.drop_area.configure(state="disabled")
+
 
     def on_drop(self, event):
         files = self.master.tk.splitlist(event.data)
@@ -947,22 +1009,27 @@ class PDFtoJPGApp(ctk.CTkFrame):
                 self.pdf_files.append(f)
         self.update_file_list()
 
+
     def start_conversion(self):
         if not self.pdf_files:
             messagebox.showwarning("경고", "등록된 PDF 파일이 없습니다.")
             return
 
+
         from pdf2image.pdf2image import pdfinfo_from_path
         total_files = len(self.pdf_files)
         total_pages = sum(pdfinfo_from_path(pdf, poppler_path=self.poppler_path)["Pages"] for pdf in self.pdf_files)
+
 
         self.progress_popup = ProgressPopup(self.master, total_files, total_pages)
         self.progress_popup.cancel_callback = self.cancel_conversion
         self._cancel_requested = False
         threading.Thread(target=self.convert_files, daemon=True).start()
 
+
     def cancel_conversion(self):
         self._cancel_requested = True
+
 
     def convert_files(self):
         try:
@@ -970,9 +1037,11 @@ class PDFtoJPGApp(ctk.CTkFrame):
             completed_files = 0
             completed_pages = 0
 
+
             for pdf_file in self.pdf_files:
                 if self._cancel_requested:
                     break
+
 
                 info = pdfinfo_from_path(pdf_file, poppler_path=self.poppler_path)
                 total_pages = info["Pages"]
@@ -984,6 +1053,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
                 images = convert_from_path(pdf_file, dpi=200, first_page=1, last_page=total_pages, fmt="jpeg",
                                           output_folder=str(output_folder), paths_only=True, poppler_path=self.poppler_path)
 
+
                 for i, img_path in enumerate(images, start=1):
                     if self._cancel_requested:
                         break
@@ -992,9 +1062,11 @@ class PDFtoJPGApp(ctk.CTkFrame):
                     completed_pages += 1
                     self.progress_popup.update_page_progress(completed_pages)
 
+
                 if not self._cancel_requested:
                     completed_files += 1
                     self.progress_popup.update_file_progress(completed_files)
+
 
             if not self._cancel_requested:
                 self.progress_popup.show_completion()
@@ -1005,6 +1077,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
             messagebox.showerror("오류", f"변환 중 오류 발생 : {e}")
             if self.progress_popup:
                 self.progress_popup.destroy()
+
 
 
 if __name__ == "__main__":
