@@ -1,6 +1,6 @@
 {
-  "version": "1.0.2",
-  "generated_date": "2025-11-01T03:33:26.422198",
+  "version": "1.0.3",
+  "generated_date": "2025-11-03T02:56:19.814420",
   "files": [
     {
       "relative_path": "icon.ico",
@@ -9,12 +9,12 @@
     },
     {
       "relative_path": "P2J.exe",
-      "hash": "c1225d169ce016c6ae07753de844e02842e6560ccea88521a55d918adcb82f98",
-      "size": 5766436
+      "hash": "79f22dd547d462c82526a6a18d601bc125c51a34a7c68c7fe9e9a9807dd2d725",
+      "size": 5767782
     },
     {
       "relative_path": "_internal/base_library.zip",
-      "hash": "92e0343673d45b382a51fd744da3dcb148149f2f441652975a452eb101f016f3",
+      "hash": "c77cb54d14d475568eaee76a16ef5860bfbef133b9b65e207813beb428170664",
       "size": 1403000
     },
     {
