@@ -8,7 +8,6 @@ import requests
 import zipfile
 import queue
 import ctypes
-import ctypes.wintypes
 import hashlib
 import json
 import customtkinter as ctk
@@ -371,11 +370,12 @@ def update_application(repo_owner: str, repo_name: str, app_dir: Path,
         local_version = local_manifest.get('version', '0.0.0')
         remote_version = remote_manifest.get('version', '0.0.0')
         
-        print(f"로컬 버전: v{local_version}")
-        print(f"원격 버전: v{remote_version}")
+        print(f"현재 버전: v{local_version}")
+        print(f"최신 버전: v{remote_version}")
         
         if progress_callback:
-            progress_callback("업데이트 확인 중", 1.0, f"원격 버전: v{remote_version}", "check")
+            progress_callback("업데이트 확인 중", 1.0, f" 최신 버전: v{remote_version}", "check")
+            progress_callback("업데이트 확인 중", 1.0, f" 현재 버전: v{local_version}", "check")
         
         # 매니페스트 비교 (딕셔너리 반환)
         comparison_result = compare_manifests(local_manifest, remote_manifest, app_dir, progress_callback)
@@ -634,7 +634,7 @@ def download_and_extract_poppler(dest_folder: Path, progress_callback=None):
 
 def prepare_poppler_path_with_ui(unified_popup):
     """UI와 함께 Poppler 경로 준비"""
-    base_dir = Path("C:/PDF TO JPG 변환기")
+    base_dir = Path(__file__).parent
     
     try:
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -664,6 +664,8 @@ def prepare_poppler_path_with_ui(unified_popup):
         if poppler_bin_path and version:
             unified_popup.safe_add_log(f"  ✓ 검사 완료", is_progress=False)
             time.sleep(0.1)
+            unified_popup.safe_add_log(f"  ✓ 최신 버전: v{latest_version}", is_progress=False)
+            time.sleep(0.1)
             unified_popup.safe_add_log(f"  ✓ 설치된 버전: {version}", is_progress=False)
             time.sleep(0.1)
             
@@ -674,8 +676,7 @@ def prepare_poppler_path_with_ui(unified_popup):
                 needs_update = True
             
             if needs_update:
-                unified_popup.safe_add_log(f"  ! 최신 버전: v{latest_version}", is_progress=False)
-                time.sleep(0.1)
+
                 unified_popup.safe_add_log(f"  ! 이전 버전이 설치되어 있습니다", is_progress=False)
                 time.sleep(0.1)
                 unified_popup.safe_add_log(f"  ! 이전 버전을 삭제합니다", is_progress=False)
