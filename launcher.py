@@ -522,26 +522,18 @@ def get_installed_poppler_version(poppler_dir: Path):
     return None
 
 def get_latest_poppler_version(log_callback=None):
-    """Poppler 최신 버전 정보 가져오기"""
+    """Poppler 최신 버전 정보 가져오기 (로그 없이)"""
     api_url = f"https://api.github.com/repos/{POPPLER_REPO_OWNER}/{POPPLER_REPO_NAME}/releases/latest"
     try:
-        if log_callback:
-            log_callback("  → GitHub API 요청 중...", False)
         resp = requests.get(api_url, timeout=10, verify=VERIFY_SSL)
         resp.raise_for_status()
         data = resp.json()
         
-        if log_callback:
-            log_callback("  ✓ 최신 릴리즈 정보 확인 완료", False)
-        
         for asset in data.get("assets", []):
             if asset["name"].lower().endswith(".zip"):
-                # 여러 패턴에서 버전 추출 시도
-                # 패턴 1: poppler-24.08.0.zip
-                # 패턴 2: Release-25.07.0-0.zip
                 filename = asset["name"]
                 
-                # 먼저 일반적인 버전 패턴 찾기 (숫자.숫자.숫자)
+                # 버전 추출 (숫자.숫자.숫자 패턴)
                 match = re.search(r'(\d+\.\d+\.\d+)', filename)
                 
                 if match:
@@ -549,25 +541,17 @@ def get_latest_poppler_version(log_callback=None):
                 else:
                     version = "unknown"
                 
-                if log_callback:
-                    log_callback(f"  ✓ 다운로드 파일: {filename}", False)
-                    if version != "unknown":
-                        log_callback(f"  ✓ 버전: v{version}", False)
-                
                 return asset["browser_download_url"], asset["name"], version
         
         return None, None, None
     except Exception as e:
         if log_callback:
-            log_callback(f"  ✗ API 요청 실패: {e}", False)
+            log_callback(f"  ✗ 최신 버전 확인 실패: {e}", False)
         return None, None, None
 
 
 def download_and_extract_poppler(dest_folder: Path, log_callback=None):
     """Poppler 다운로드 및 압축 해제"""
-    if log_callback:
-        log_callback("→ Poppler 다운로드 준비", False)
-
     download_url, filename, version = get_latest_poppler_version(log_callback)
     if not download_url:
         raise RuntimeError("Poppler 윈도우용 최신 zip 파일을 찾을 수 없습니다.")
@@ -575,7 +559,8 @@ def download_and_extract_poppler(dest_folder: Path, log_callback=None):
     zip_path = dest_folder / filename
 
     if log_callback:
-        log_callback(f"→ Poppler 다운로드 시작: {filename}", False)
+        log_callback(f"→ 다운로드 파일: {filename}", False)  # 다운로드 파일명 표시
+        log_callback(f"→ 다운로드 시작...", False)
 
     # 다운로드
     try:
@@ -597,7 +582,7 @@ def download_and_extract_poppler(dest_folder: Path, log_callback=None):
                             last_percent = percent
         
         if log_callback:
-            log_callback(f"  ✓ 다운로드 완료: {filename}", False)
+            log_callback(f"  ✓ 다운로드 완료", False)
     except Exception as e:
         if log_callback:
             log_callback(f"  ✗ 다운로드 실패: {e}", False)
@@ -605,7 +590,7 @@ def download_and_extract_poppler(dest_folder: Path, log_callback=None):
 
     # 압축 해제
     if log_callback:
-        log_callback("→ Poppler 압축 해제 시작", False)
+        log_callback("→ 압축 해제 시작", False)
 
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
@@ -631,16 +616,15 @@ def download_and_extract_poppler(dest_folder: Path, log_callback=None):
         if zip_path.exists():
             os.remove(zip_path)
             if log_callback:
-                log_callback("  ✓ 임시 zip 파일 삭제 완료", False)
+                log_callback("  ✓ 임시 파일 삭제 완료", False)
 
-    # 압축 해제된 폴더 찾기 (poppler-버전 형태)
+    # 압축 해제된 폴더 찾기
     if log_callback:
         log_callback("→ Poppler 폴더 확인 중...", False)
 
     poppler_folder = None
     for item in dest_folder.iterdir():
         if item.is_dir() and "poppler" in item.name.lower():
-            # Library/bin 폴더가 있는지 확인
             bin_path = item / "Library" / "bin"
             if bin_path.exists() and (bin_path / "pdftoppm.exe").exists():
                 poppler_folder = item
@@ -648,9 +632,7 @@ def download_and_extract_poppler(dest_folder: Path, log_callback=None):
     
     if poppler_folder:
         if log_callback:
-            log_callback(f"  ✓ Poppler 폴더 발견: {poppler_folder.name}", False)
-            log_callback(f"  ✓ 버전: v{version}", False)
-            log_callback("✓ Poppler 설치 완료", False)
+            log_callback(f"  ✓ Poppler 설치 완료 (v{version})", False)
         
         return poppler_folder / "Library" / "bin"
     else:
@@ -667,77 +649,81 @@ def check_poppler(app_dir: Path, log_callback):
         time.sleep(0.2)
     
     poppler_dir = get_poppler_directory(app_dir)
-    
-    if log_callback:
-        log_callback(f"→ Poppler 설치 경로: {poppler_dir}", False)
 
-    # 설치된 버전 확인 (폴더명에서 추출)
+    # 설치된 버전 확인
     installed_version = get_installed_poppler_version(poppler_dir)
     
+    # 최신 버전 확인 (로그 없이)
+    if log_callback:
+        log_callback("→ 최신 버전 확인 중...", False)
+    
+    _, _, latest_version = get_latest_poppler_version(log_callback)
+    
+    if not latest_version:
+        if log_callback:
+            log_callback("  ✗ 최신 버전 확인 실패", False)
+        if installed_version:
+            if log_callback:
+                log_callback("", False)
+                log_callback(f"✓ 기존 Poppler 사용 (v{installed_version})", False)
+        else:
+            if log_callback:
+                log_callback("", False)
+                log_callback("✗ Poppler 설치 불가 (네트워크 오류)", False)
+            raise RuntimeError("Poppler 최신 버전 확인 실패")
+        return
+    
+    # 최신 버전 표시
+    if log_callback:
+        log_callback(f"  • 최신 버전: v{latest_version}", False)
+    
+    # 설치된 버전과 비교
     if installed_version:
         if log_callback:
             log_callback(f"  • 설치된 버전: v{installed_version}", False)
         
-        # 최신 버전 확인
-        if log_callback:
-            log_callback("→ 최신 버전 확인 중...", False)
-        
-        _, _, latest_version = get_latest_poppler_version(log_callback)
-        
-        if latest_version:
+        if installed_version == latest_version:
             if log_callback:
-                log_callback(f"  • 최신 버전: v{latest_version}", False)
-            
-            if installed_version == latest_version:
-                if log_callback:
-                    log_callback("", False)
-                    log_callback("✓ Poppler가 최신 버전입니다", False)
-            else:
-                if log_callback:
-                    log_callback("", False)
-                    log_callback("! 새 버전 발견 - Poppler 업데이트 시작", False)
-                    log_callback("→ 기존 Poppler 삭제 중...", False)
-                
-                # 기존 Poppler 폴더 삭제
-                for item in poppler_dir.iterdir():
-                    if item.is_dir() and "poppler" in item.name.lower():
-                        try:
-                            shutil.rmtree(item)
-                            if log_callback:
-                                log_callback(f"  ✓ 삭제 완료: {item.name}", False)
-                        except Exception as e:
-                            if log_callback:
-                                log_callback(f"  ✗ 삭제 실패: {e}", False)
-                
-                if log_callback:
-                    log_callback("", False)
-                
-                # 새 버전 설치
-                try:
-                    download_and_extract_poppler(poppler_dir, log_callback)
-                except Exception as e:
-                    if log_callback:
-                        log_callback(f"✗ Poppler 업데이트 실패: {e}", False)
-                    raise
+                log_callback("", False)
+                log_callback("✓ Poppler가 최신 버전입니다", False)
+            return
         else:
             if log_callback:
                 log_callback("", False)
-                log_callback("✓ Poppler가 설치되어 있습니다 (버전 확인 실패)", False)
-    
+                log_callback("! 새 버전 발견 - Poppler 업데이트 시작", False)
+                log_callback("→ 기존 Poppler 삭제 중...", False)
+            
+            # 기존 Poppler 폴더 삭제
+            for item in poppler_dir.iterdir():
+                if item.is_dir() and "poppler" in item.name.lower():
+                    try:
+                        shutil.rmtree(item)
+                        if log_callback:
+                            log_callback(f"  ✓ 삭제 완료: {item.name}", False)
+                    except Exception as e:
+                        if log_callback:
+                            log_callback(f"  ✗ 삭제 실패: {e}", False)
+            
+            if log_callback:
+                log_callback("", False)
     else:
         # Poppler 없음 - 새로 설치
         if log_callback:
             log_callback("", False)
-            log_callback("! Poppler를 찾을 수 없습니다", False)
-            log_callback("→ Poppler 다운로드 시작", False)
+            log_callback("! Poppler가 설치되지 않았습니다", False)
+            log_callback("", False)
             time.sleep(0.2)
-
-        try:
-            download_and_extract_poppler(poppler_dir, log_callback)
-        except Exception as e:
-            if log_callback:
-                log_callback(f"✗ Poppler 설치 실패: {e}", False)
-            raise
+    
+    # 새 버전 다운로드 및 설치
+    try:
+        download_and_extract_poppler(poppler_dir, log_callback)
+        if log_callback:
+            log_callback("", False)
+            log_callback("✓ Poppler 설치 완료", False)
+    except Exception as e:
+        if log_callback:
+            log_callback(f"✗ Poppler 설치 실패: {e}", False)
+        raise
 
 
 # ---------- UI 컴포넌트 ----------

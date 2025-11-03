@@ -228,7 +228,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
         # 버전 표시
         version = self.get_app_version()
         version_label = ctk.CTkLabel(control_container, text=f"v{version}", text_color="gray")
-        version_label.pack(side="right", padx=5)
+        version_label.pack(side="right", padx=10)
 
     def get_app_version(self):
         """manifest.json에서 버전 읽기"""
