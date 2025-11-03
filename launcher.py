@@ -203,11 +203,11 @@ def download_all_files(repo_owner, repo_name, remote_manifest, app_dir: Path, lo
     """모든 파일 다운로드"""
     files_list = remote_manifest.get('files', [])
     
-    # 유효한 파일만 필터링
+    # 유효한 파일만 필터링 (relative_path와 hash 체크)
     files = []
     for item in files_list:
-        if isinstance(item, dict) and 'path' in item and 'hash' in item:
-            files.append(item)
+        if isinstance(item, dict) and 'relative_path' in item and 'hash' in item:
+            files.append({'path': item['relative_path'], 'hash': item['hash']})
     
     if not files:
         if log_callback:
@@ -261,16 +261,16 @@ def integrity_check_and_fix(repo_owner, repo_name, local_manifest, remote_manife
     local_files_list = local_manifest.get('files', [])
     remote_files_list = remote_manifest.get('files', [])
     
-    # 안전한 딕셔너리 생성 (path와 hash가 있는 항목만)
+    # 안전한 딕셔너리 생성 (relative_path와 hash가 있는 항목만)
     local_files = {}
     for item in local_files_list:
-        if isinstance(item, dict) and 'path' in item and 'hash' in item:
-            local_files[item['path']] = item['hash']
+        if isinstance(item, dict) and 'relative_path' in item and 'hash' in item:
+            local_files[item['relative_path']] = item['hash']
     
     remote_files = {}
     for item in remote_files_list:
-        if isinstance(item, dict) and 'path' in item and 'hash' in item:
-            remote_files[item['path']] = item['hash']
+        if isinstance(item, dict) and 'relative_path' in item and 'hash' in item:
+            remote_files[item['relative_path']] = item['hash']
     
     if not remote_files:
         if log_callback:
@@ -514,13 +514,12 @@ def get_installed_poppler_version(poppler_dir: Path):
     # poppler 디렉토리 내에서 버전 정보가 포함된 폴더 찾기
     for item in poppler_dir.iterdir():
         if item.is_dir() and "poppler" in item.name.lower():
-            # 폴더명에서 버전 추출 (예: poppler-24.08.0 -> 24.08.0)
-            match = re.search(r'poppler[_-]?(\d+\.\d+\.\d+)', item.name.lower())
+            # 폴더명에서 버전 추출 (숫자.숫자.숫자 패턴)
+            match = re.search(r'(\d+\.\d+\.\d+)', item.name)
             if match:
                 return match.group(1)
     
     return None
-
 
 def get_latest_poppler_version(log_callback=None):
     """Poppler 최신 버전 정보 가져오기"""
@@ -537,13 +536,26 @@ def get_latest_poppler_version(log_callback=None):
         
         for asset in data.get("assets", []):
             if asset["name"].lower().endswith(".zip"):
-                # 파일명에서 버전 추출 (예: poppler-24.08.0.zip -> 24.08.0)
-                match = re.search(r'poppler[_-]?(\d+\.\d+\.\d+)', asset["name"].lower())
-                version = match.group(1) if match else "unknown"
+                # 여러 패턴에서 버전 추출 시도
+                # 패턴 1: poppler-24.08.0.zip
+                # 패턴 2: Release-25.07.0-0.zip
+                filename = asset["name"]
+                
+                # 먼저 일반적인 버전 패턴 찾기 (숫자.숫자.숫자)
+                match = re.search(r'(\d+\.\d+\.\d+)', filename)
+                
+                if match:
+                    version = match.group(1)
+                else:
+                    version = "unknown"
                 
                 if log_callback:
-                    log_callback(f"  ✓ 다운로드 파일: {asset['name']}", False)
+                    log_callback(f"  ✓ 다운로드 파일: {filename}", False)
+                    if version != "unknown":
+                        log_callback(f"  ✓ 버전: v{version}", False)
+                
                 return asset["browser_download_url"], asset["name"], version
+        
         return None, None, None
     except Exception as e:
         if log_callback:
@@ -735,7 +747,7 @@ class LauncherPopup(ctk.CTkToplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("초기화 중...")
+        self.title("파일 무결성 검사 중...")
         self.geometry("700x400")
         self.resizable(False, False)
 
@@ -807,9 +819,14 @@ class LauncherPopup(ctk.CTkToplevel):
         try:
             self._closing = True
             self.grab_release()
+        except Exception:
+            pass
+            
+        try:
             self.destroy()
-        except Exception as e:
-            print(f"창 닫기 실패: {e}")
+        except Exception:
+            pass
+
 
 
 class LauncherApp(ctk.CTk):
@@ -823,6 +840,7 @@ class LauncherApp(ctk.CTk):
 
         self.app_dir = get_app_directory()
         self.result = {"should_close": False, "launch_main": True}
+        self._is_closing = False
 
         self.popup = LauncherPopup(self)
 
@@ -851,7 +869,12 @@ class LauncherApp(ctk.CTk):
 
             except Exception as e:
                 print(f"초기화 오류: {e}")
-                self.popup.safe_add_log(f"✗ 초기화 오류: {e}", False)
+                import traceback
+                traceback.print_exc()
+                try:
+                    self.popup.safe_add_log(f"✗ 초기화 오류: {e}", False)
+                except:
+                    pass
                 self.result["should_close"] = True
                 self.result["launch_main"] = False
 
@@ -861,11 +884,18 @@ class LauncherApp(ctk.CTk):
         self.popup.after(100, start_init)
 
         def check_close():
+            if self._is_closing:
+                return
+                
             if self.result["should_close"]:
+                self._is_closing = True
                 try:
                     self.popup.close_window()
                 except Exception:
                     pass
+                
+                # 메인 앱 실행을 after로 지연
+                self.after(500, self.launch_main_app)
             else:
                 try:
                     self.popup.after(100, check_close)
@@ -879,19 +909,67 @@ class LauncherApp(ctk.CTk):
         except Exception:
             pass
 
-        # 메인 앱 실행
-        if self.result["launch_main"]:
-            main_exe = self.app_dir / MAIN_EXE_NAME
-            if main_exe.exists():
-                subprocess.Popen([str(main_exe)])
-            else:
+    def launch_main_app(self):
+        """메인 앱 실행"""
+        if not self.result["launch_main"]:
+            self.quit_app()
+            return
+        
+        main_exe = self.app_dir / MAIN_EXE_NAME
+        
+        if not main_exe.exists():
+            print(f"메인 앱을 찾을 수 없습니다: {main_exe}")
+            try:
                 messagebox.showerror("오류", f"메인 앱을 찾을 수 없습니다:\n{main_exe}")
-
-        self.destroy()
+            except:
+                pass
+            self.quit_app()
+            return
+        
+        try:
+            print(f"메인 앱 실행 시도: {main_exe}")
+            # 프로세스 실행
+            process = subprocess.Popen(
+                [str(main_exe)],
+                cwd=str(self.app_dir),  # 작업 디렉토리 설정
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            print(f"메인 앱 실행 성공 (PID: {process.pid})")
+            time.sleep(1)  # 메인 앱이 시작될 시간 확보
+        except Exception as e:
+            print(f"메인 앱 실행 실패: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                messagebox.showerror("오류", f"메인 앱 실행 실패:\n{e}")
+            except:
+                pass
+        
+        self.quit_app()
+    
+    def quit_app(self):
+        """Launcher 종료"""
+        try:
+            self.quit()
+        except:
+            pass
+        
+        try:
+            self.destroy()
+        except:
+            pass
 
 
 # ---------- 메인 진입점 ----------
 
 if __name__ == "__main__":
-    app = LauncherApp()
-    app.mainloop()
+    try:
+        app = LauncherApp()
+        app.mainloop()
+    except Exception as e:
+        print(f"Launcher 오류: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        sys.exit(0)
