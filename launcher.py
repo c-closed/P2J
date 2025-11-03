@@ -11,8 +11,9 @@ import re
 import time
 import requests
 import zipfile
+import concurrent.futures
 from pathlib import Path
-from typing import Optional, Dict, List, Callable
+from typing import Optional, Dict, List, Callable, Tuple
 
 import customtkinter as ctk
 from tkinter import messagebox
@@ -31,6 +32,12 @@ class Config:
     POPPLER_FOLDER_NAME = "poppler"
     POPPLER_REPO_OWNER = "oschwartz10612"
     POPPLER_REPO_NAME = "poppler-windows"
+    
+    # 다운로드 설정
+    MAX_RETRIES = 3
+    RETRY_DELAY = 2
+    DOWNLOAD_TIMEOUT = 60
+    MAX_CONCURRENT_DOWNLOADS = 10  # 동시 다운로드 수
     
     @staticmethod
     def init_ssl():
@@ -195,24 +202,95 @@ class GitHubDownloader:
     @staticmethod
     def download_file(repo_owner: str, repo_name: str, file_path: str, 
                      dest_path: Path, branch: str) -> bool:
-        """단일 파일 다운로드"""
+        """단일 파일 다운로드 (재시도 로직 포함)"""
         url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/{file_path}"
-        try:
-            resp = requests.get(url, timeout=30, verify=VERIFY_SSL)
-            resp.raise_for_status()
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(dest_path, "wb") as f:
-                f.write(resp.content)
-            return True
-        except Exception as e:
-            print(f"다운로드 실패({file_path}): {e}")
-            return False
+        
+        for attempt in range(Config.MAX_RETRIES):
+            try:
+                # 스트리밍 방식으로 다운로드 (청크 크기 증가)
+                with requests.get(url, timeout=Config.DOWNLOAD_TIMEOUT, 
+                                verify=VERIFY_SSL, stream=True) as resp:
+                    
+                    # Rate limit 확인
+                    if resp.status_code == 403:
+                        remaining = resp.headers.get('X-RateLimit-Remaining', '?')
+                        if remaining == '0':
+                            reset_time = int(resp.headers.get('X-RateLimit-Reset', 0))
+                            wait_seconds = reset_time - time.time()
+                            print(f"Rate limit 도달. {wait_seconds:.0f}초 후 재시도 필요")
+                            return False
+                    
+                    resp.raise_for_status()
+                    
+                    # 디렉토리 생성
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # 파일 쓰기 권한 확인
+                    if dest_path.exists() and not os.access(dest_path, os.W_OK):
+                        print(f"파일 쓰기 권한 없음: {dest_path}")
+                        return False
+                    
+                    # 청크 단위로 다운로드 (크기 증가: 8KB → 64KB)
+                    with open(dest_path, "wb") as f:
+                        for chunk in resp.iter_content(chunk_size=65536):
+                            if chunk:
+                                f.write(chunk)
+                    
+                    # 파일 생성 확인
+                    if not dest_path.exists():
+                        print(f"파일 생성 실패: {dest_path}")
+                        return False
+                    
+                    return True
+                    
+            except requests.exceptions.Timeout:
+                if attempt < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                continue
+                
+            except requests.exceptions.ConnectionError:
+                if attempt < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                continue
+                
+            except PermissionError as e:
+                print(f"권한 오류({file_path}): {e}")
+                return False
+                
+            except Exception as e:
+                if attempt < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                continue
+        
+        return False
+    
+    @staticmethod
+    def _download_single_file(args: Tuple) -> Tuple[int, str, str, bool, Optional[str]]:
+        """단일 파일 다운로드 (병렬 처리용)"""
+        index, total, file_path, expected_hash, repo_owner, repo_name, branch, app_dir = args
+        
+        dest_path = app_dir / file_path
+        
+        # 다운로드
+        success = GitHubDownloader.download_file(repo_owner, repo_name, file_path, dest_path, branch)
+        
+        if success:
+            # 해시 검증
+            downloaded_hash = FileUtils.calculate_hash(dest_path)
+            hash_match = (downloaded_hash == expected_hash)
+            return (index, file_path, expected_hash, hash_match, downloaded_hash)
+        
+        return (index, file_path, expected_hash, False, None)
     
     @staticmethod
     def download_all(repo_owner: str, repo_name: str, manifest: Dict, 
                     app_dir: Path, branch: str, 
-                    log_callback: Optional[Callable] = None) -> int:
-        """모든 파일 다운로드"""
+                    log_callback: Optional[Callable] = None,
+                    max_workers: int = None) -> int:
+        """모든 파일 다운로드 (병렬 처리)"""
+        if max_workers is None:
+            max_workers = Config.MAX_CONCURRENT_DOWNLOADS
+        
         files = ManifestManager.parse_files(manifest)
         
         if not files:
@@ -226,26 +304,41 @@ class GitHubDownloader:
         success_count = 0
         fail_count = 0
         
-        for i, (file_path, expected_hash) in enumerate(files.items(), start=1):
-            dest_path = app_dir / file_path
+        # 병렬 다운로드 준비
+        file_items = list(files.items())
+        total_files = len(file_items)
+        
+        download_args = [
+            (i + 1, total_files, file_path, expected_hash, repo_owner, repo_name, branch, app_dir)
+            for i, (file_path, expected_hash) in enumerate(file_items)
+        ]
+        
+        # 병렬 다운로드 실행
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(GitHubDownloader._download_single_file, args): args 
+                      for args in download_args}
             
-            if log_callback:
-                log_callback(f"  → [{i}/{len(files)}] {file_path} 다운로드 중...", False)
-            
-            if GitHubDownloader.download_file(repo_owner, repo_name, file_path, dest_path, branch):
-                downloaded_hash = FileUtils.calculate_hash(dest_path)
-                if downloaded_hash == expected_hash:
-                    success_count += 1
-                    if log_callback:
-                        log_callback(f"  ✓ [{i}/{len(files)}] {file_path} 완료", False)
-                else:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    index, file_path, expected_hash, hash_match, downloaded_hash = future.result()
+                    
+                    if hash_match:
+                        success_count += 1
+                        if log_callback:
+                            log_callback(f"  ✓ [{index}/{total_files}] {file_path}", False)
+                    elif downloaded_hash is not None:
+                        fail_count += 1
+                        if log_callback:
+                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (해시 불일치)", False)
+                    else:
+                        fail_count += 1
+                        if log_callback:
+                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (다운로드 실패)", False)
+                
+                except Exception as e:
                     fail_count += 1
                     if log_callback:
-                        log_callback(f"  ✗ [{i}/{len(files)}] {file_path} 해시 불일치", False)
-            else:
-                fail_count += 1
-                if log_callback:
-                    log_callback(f"  ✗ [{i}/{len(files)}] {file_path} 다운로드 실패", False)
+                        log_callback(f"  ✗ 다운로드 오류: {e}", False)
         
         if log_callback:
             if fail_count > 0:
@@ -532,38 +625,48 @@ class UpdateManager:
     @staticmethod
     def _repair_files(app_dir: Path, files_to_download: List[Dict],
                      log_callback: Optional[Callable]) -> None:
-        """파일 복구"""
+        """파일 복구 (병렬 처리)"""
         if log_callback:
             log_callback("", False)
             log_callback(f"→ 손상된 파일 복구 시작 ({len(files_to_download)}개)", False)
         
         success_count = 0
         fail_count = 0
+        total_files = len(files_to_download)
         
-        for i, file_info in enumerate(files_to_download, start=1):
-            file_path = file_info['path']
-            expected_hash = file_info['hash']
-            dest_path = app_dir / file_path
+        # 병렬 다운로드 준비
+        download_args = [
+            (i + 1, total_files, file_info['path'], file_info['hash'], 
+             Config.APP_REPO_OWNER, Config.APP_REPO_NAME, Config.APP_BRANCH, app_dir)
+            for i, file_info in enumerate(files_to_download)
+        ]
+        
+        # 병렬 다운로드 실행
+        with concurrent.futures.ThreadPoolExecutor(max_workers=Config.MAX_CONCURRENT_DOWNLOADS) as executor:
+            futures = {executor.submit(GitHubDownloader._download_single_file, args): args 
+                      for args in download_args}
             
-            if log_callback:
-                log_callback(f"  → [{i}/{len(files_to_download)}] {file_path} 다운로드 중...", False)
-            
-            if GitHubDownloader.download_file(
-                Config.APP_REPO_OWNER, Config.APP_REPO_NAME, file_path, dest_path, Config.APP_BRANCH
-            ):
-                downloaded_hash = FileUtils.calculate_hash(dest_path)
-                if downloaded_hash == expected_hash:
-                    success_count += 1
-                    if log_callback:
-                        log_callback(f"  ✓ [{i}/{len(files_to_download)}] {file_path} 완료", False)
-                else:
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    index, file_path, expected_hash, hash_match, downloaded_hash = future.result()
+                    
+                    if hash_match:
+                        success_count += 1
+                        if log_callback:
+                            log_callback(f"  ✓ [{index}/{total_files}] {file_path}", False)
+                    elif downloaded_hash is not None:
+                        fail_count += 1
+                        if log_callback:
+                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (해시 불일치)", False)
+                    else:
+                        fail_count += 1
+                        if log_callback:
+                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (다운로드 실패)", False)
+                
+                except Exception as e:
                     fail_count += 1
                     if log_callback:
-                        log_callback(f"  ✗ [{i}/{len(files_to_download)}] {file_path} 해시 불일치", False)
-            else:
-                fail_count += 1
-                if log_callback:
-                    log_callback(f"  ✗ [{i}/{len(files_to_download)}] {file_path} 다운로드 실패", False)
+                        log_callback(f"  ✗ 다운로드 오류: {e}", False)
         
         if log_callback:
             if fail_count > 0:
@@ -802,8 +905,8 @@ class LauncherApp(ctk.CTk):
         
         # 화면 중앙 배치
         self.update_idletasks()
-        x = (self.winfo_screenwidth() // 2) - 350
-        y = (self.winfo_screenheight() // 2) - 200
+        x = (self.winfo_screenwidth() - 700) // 2
+        y = (self.winfo_screenheight() - 400) // 2
         self.geometry(f"700x400+{x}+{y}")
 
     def _setup_icon(self) -> None:
