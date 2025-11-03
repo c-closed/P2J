@@ -201,8 +201,17 @@ def download_file_from_github(repo_owner, repo_name, file_path, dest_path: Path,
 
 def download_all_files(repo_owner, repo_name, remote_manifest, app_dir: Path, log_callback, branch):
     """모든 파일 다운로드"""
-    files = remote_manifest.get('files', [])
+    files_list = remote_manifest.get('files', [])
+    
+    # 유효한 파일만 필터링
+    files = []
+    for item in files_list:
+        if isinstance(item, dict) and 'path' in item and 'hash' in item:
+            files.append(item)
+    
     if not files:
+        if log_callback:
+            log_callback("  ! 다운로드할 파일이 없습니다", False)
         return 0
     
     if log_callback:
@@ -248,8 +257,25 @@ def integrity_check_and_fix(repo_owner, repo_name, local_manifest, remote_manife
     if log_callback:
         log_callback("→ 파일 무결성 검사 시작...", False)
     
-    local_files = {f['path']: f['hash'] for f in local_manifest.get('files', [])}
-    remote_files = {f['path']: f['hash'] for f in remote_manifest.get('files', [])}
+    # manifest 파일 구조 검증
+    local_files_list = local_manifest.get('files', [])
+    remote_files_list = remote_manifest.get('files', [])
+    
+    # 안전한 딕셔너리 생성 (path와 hash가 있는 항목만)
+    local_files = {}
+    for item in local_files_list:
+        if isinstance(item, dict) and 'path' in item and 'hash' in item:
+            local_files[item['path']] = item['hash']
+    
+    remote_files = {}
+    for item in remote_files_list:
+        if isinstance(item, dict) and 'path' in item and 'hash' in item:
+            remote_files[item['path']] = item['hash']
+    
+    if not remote_files:
+        if log_callback:
+            log_callback("  ✗ 원격 manifest 구조 오류", False)
+        return {'to_download': [], 'to_delete': []}
     
     files_to_download = []
     files_to_delete = []
@@ -328,6 +354,17 @@ def update_main_app(app_dir: Path, log_callback):
         if not remote_manifest:
             if log_callback:
                 log_callback("  ✗ 업데이트 확인 실패", False)
+            return False
+
+        # manifest 구조 검증 추가
+        if not isinstance(remote_manifest, dict):
+            if log_callback:
+                log_callback("  ✗ 원격 manifest 형식 오류", False)
+            return False
+        
+        if 'version' not in remote_manifest:
+            if log_callback:
+                log_callback("  ✗ 원격 manifest에 version 정보 없음", False)
             return False
 
         local_manifest = get_local_manifest(app_dir)
