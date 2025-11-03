@@ -1,6 +1,6 @@
 {
-  "version": "1.1.1",
-  "generated_date": "2025-11-03T03:55:53.179228",
+  "version": "1.1.5",
+  "generated_date": "2025-11-03T10:40:06.094712",
   "files": [
     {
       "relative_path": "icon.ico",
@@ -8,13 +8,18 @@
       "size": 67646
     },
     {
+      "relative_path": "launcher.exe",
+      "hash": "67847a62f8177f549b455c7047111845be2690284a5dcb5067b4dba304db0fa2",
+      "size": 21020016
+    },
+    {
       "relative_path": "P2J.exe",
-      "hash": "3089d36fdb0d92ad4eb7da4abeb92001480e503f3d3a0a5fafc762725c468fe8",
-      "size": 5767250
+      "hash": "e5dfa7796aecbbae638220f2eb0fdebf0c4f7caffc0236c79679b38377a174de",
+      "size": 5306103
     },
     {
       "relative_path": "_internal/base_library.zip",
-      "hash": "60da0ca42a4cee215e6394b72fe8fa7488315b351dcde6b7578888dd412dde5b",
+      "hash": "c88d0d8a272180ac0b0780b0684c65544991bfac5d7ee5390ece053cac910e6b",
       "size": 1403000
     },
     {
@@ -151,26 +156,6 @@
       "relative_path": "_internal/_wmi.pyd",
       "hash": "6793bd216b5a329689cde8b1532858d6731707ec5063897f979a81e57077402c",
       "size": 39768
-    },
-    {
-      "relative_path": "_internal/certifi/cacert.pem",
-      "hash": "2089fc5a25836401faee99f722460b01b393999746a0fb817943666d6ecc0458",
-      "size": 291366
-    },
-    {
-      "relative_path": "_internal/certifi/py.typed",
-      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "size": 0
-    },
-    {
-      "relative_path": "_internal/charset_normalizer/md.cp313-win_amd64.pyd",
-      "hash": "89d8172b5f460c3fd85716c9641643fd7d893365a99867df4471b017f2995695",
-      "size": 10752
-    },
-    {
-      "relative_path": "_internal/charset_normalizer/md__mypyc.cp313-win_amd64.pyd",
-      "hash": "3ccacfdbf227750083980a7de0c982be26dfebac26e4fa599d1e7a5866e92a21",
-      "size": 126976
     },
     {
       "relative_path": "_internal/PIL/_avif.cp313-win_amd64.pyd",
