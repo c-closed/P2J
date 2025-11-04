@@ -40,7 +40,7 @@ class Config:
     MAX_CONCURRENT_DOWNLOADS = 3
     
     # GitHub Token (옵션 - Rate Limit 해결용)
-    GITHUB_TOKEN = "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"
+    GITHUB_TOKEN = os.getenv("GITHUB_TOKEN","")
     
     @staticmethod
     def init_ssl():
