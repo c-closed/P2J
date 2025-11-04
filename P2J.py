@@ -18,11 +18,37 @@ from typing import List, Optional, Callable, Tuple
 from dataclasses import dataclass
 from contextlib import suppress
 
+# ==================== 콘솔 창 숨김 (최우선) ====================
+
+if sys.platform == 'win32':
+    import ctypes
+    
+    # 1. 현재 콘솔 창 숨김
+    kernel32 = ctypes.WinDLL('kernel32')
+    user32 = ctypes.WinDLL('user32')
+    hwnd = kernel32.GetConsoleWindow()
+    if hwnd:
+        user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    
+    # 2. subprocess CREATE_NO_WINDOW 플래그 설정
+    CREATE_NO_WINDOW = 0x08000000
+    
+    _original_popen = subprocess.Popen
+    
+    def _popen_no_console(*args, **kwargs):
+        if 'creationflags' not in kwargs:
+            kwargs['creationflags'] = 0
+        kwargs['creationflags'] |= CREATE_NO_WINDOW
+        return _original_popen(*args, **kwargs)
+    
+    subprocess.Popen = _popen_no_console
+
+# ==================== Import ====================
+
 import customtkinter as ctk
 from tkinterdnd2 import TkinterDnD, DND_FILES
 from pdf2image import convert_from_path, pdfinfo_from_path
 from tkinter import messagebox, filedialog
-import ctypes
 
 
 # ==================== SSL 및 초기화 ====================
@@ -70,7 +96,7 @@ class AppConfig:
     
     APP_REPO_OWNER: str = "c-closed"
     APP_REPO_NAME: str = "P2J"
-    CURRENT_VERSION: str = "2.1.5"
+    CURRENT_VERSION: str = "2.1.8"
     POPPLER_REPO_OWNER: str = "oschwartz10612"
     POPPLER_REPO_NAME: str = "poppler-windows"
     
@@ -296,13 +322,16 @@ class ReleaseManager:
         if not msi_path.exists():
             ReleaseManager._log(log_callback, "  ✗ MSI 파일을 찾을 수 없습니다")
             return False
-
+        
         try:
             ReleaseManager._log(log_callback, "→ MSI 설치 프로그램 실행 중...")
             ReleaseManager._log(log_callback, "  • 설치 창이 백그라운드에서 열립니다")
-
+            
             # Windows 전용: 완전히 독립된 프로세스로 실행
             if sys.platform == 'win32':
+                CREATE_NEW_PROCESS_GROUP = 0x00000200
+                DETACHED_PROCESS = 0x00000008
+                
                 subprocess.Popen(
                     ['msiexec', '/i', str(msi_path)],
                     shell=False,
@@ -310,19 +339,18 @@ class ReleaseManager:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     close_fds=True,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                    creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
                 )
             else:
-                # 기타 OS (사용 안함)
                 subprocess.Popen(['msiexec', '/i', str(msi_path)], shell=False)
-
+            
             ReleaseManager._log(log_callback, "  ✓ 설치 프로그램 실행 완료")
             time.sleep(1)
             return True
         except Exception as e:
             ReleaseManager._log(log_callback, f"  ✗ 설치 프로그램 실행 실패: {e}")
             return False
-
+    
     @staticmethod
     def _log(callback: Optional[Callable], message: str, is_progress: bool = False):
         if callback:
@@ -507,7 +535,7 @@ class PopplerManager:
 
 
 class PDFProcessor:
-    """PDF 처리"""
+    """PDF 처리 - 빠른 변환"""
     
     def __init__(self, poppler_path: str):
         self.poppler_path = poppler_path
@@ -524,10 +552,12 @@ class PDFProcessor:
     
     def convert_to_images(self, pdf_path: str, output_folder: Path,
                          progress_callback: Optional[Callable[[int], None]] = None) -> int:
+        """PDF를 JPG로 변환 - 빠른 속도 + 진행률 표시"""
         info = pdfinfo_from_path(pdf_path, poppler_path=self.poppler_path)
         total_pages = info["Pages"]
         digits = len(str(total_pages))
         
+        # 전체 페이지 한 번에 변환 (빠름!)
         images = convert_from_path(
             pdf_path,
             dpi=CONFIG.CONVERSION_DPI,
@@ -536,11 +566,17 @@ class PDFProcessor:
             fmt=CONFIG.OUTPUT_FORMAT,
             output_folder=str(output_folder),
             paths_only=True,
-            poppler_path=self.poppler_path
+            poppler_path=self.poppler_path,
+            thread_count=4  # 멀티스레드로 더 빠르게
         )
         
+        # 파일명 변경하면서 진행률 업데이트
         for i, img_path in enumerate(images, start=1):
             dest_path = output_folder / f"{str(i).zfill(digits)}.jpg"
+            
+            if dest_path.exists():
+                dest_path.unlink()
+            
             shutil.move(img_path, dest_path)
             
             if progress_callback:
@@ -595,9 +631,9 @@ class InitializationWindow(tk.Tk):
             self, 
             height=22, 
             width=85,
-            font=("Consolas", 8),
-            bg="#ffffff",
-            fg="#000000",
+            font=("Consolas", 10),
+            bg="#2b2b2b",
+            fg="#ffffff",
             state="disabled"
         )
         self.log_box.pack(pady=10, padx=25, fill="both", expand=True)
@@ -661,7 +697,7 @@ class InitializationWindow(tk.Tk):
             self._add_log("", False)
             self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
             self._add_log("✓ 업데이트 시작됨", False)
-            self._add_log("설치 프로그램이 실행되었습니다.", False)
+            self._add_log("설치 프로그램이 백그라운드에서 실행됩니다.", False)
             self._add_log("프로그램을 종료합니다.", False)
             self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
             time.sleep(3)
@@ -714,7 +750,7 @@ class InitializationWindow(tk.Tk):
 
 
 class ProgressPopup(ctk.CTkToplevel):
-    """진행 팝업"""
+    """진행 팝업 - 백분율 표시 추가"""
     
     def __init__(self, parent, total_files: int, total_pages: int):
         super().__init__(parent)
@@ -746,14 +782,14 @@ class ProgressPopup(ctk.CTkToplevel):
                 self.iconbitmap(icon_path)
     
     def _create_widgets(self) -> None:
-        self.file_label = ctk.CTkLabel(self, text=f"파일: 0 / {self.total_files}")
+        self.file_label = ctk.CTkLabel(self, text=f"파일: 0 / {self.total_files} (0%)")
         self.file_label.pack(pady=(10, 5))
         
         self.file_progress = ctk.CTkProgressBar(self, width=400)
         self.file_progress.pack(pady=5)
         self.file_progress.set(0)
         
-        self.page_label = ctk.CTkLabel(self, text=f"페이지: 0 / {self.total_pages}")
+        self.page_label = ctk.CTkLabel(self, text=f"페이지: 0 / {self.total_pages} (0%)")
         self.page_label.pack(pady=(10, 5))
         
         self.page_progress = ctk.CTkProgressBar(self, width=400)
@@ -771,12 +807,14 @@ class ProgressPopup(ctk.CTkToplevel):
             self.cancel_button.configure(state="disabled")
     
     def update_file_progress(self, completed: int) -> None:
-        self.file_label.configure(text=f"파일: {completed} / {self.total_files}")
+        percent = int((completed / self.total_files) * 100) if self.total_files else 0
+        self.file_label.configure(text=f"파일: {completed} / {self.total_files} ({percent}%)")
         self.file_progress.set(completed / self.total_files if self.total_files else 0)
         self.update_idletasks()
     
     def update_page_progress(self, completed: int) -> None:
-        self.page_label.configure(text=f"페이지: {completed} / {self.total_pages}")
+        percent = int((completed / self.total_pages) * 100) if self.total_pages else 0
+        self.page_label.configure(text=f"페이지: {completed} / {self.total_pages} ({percent}%)")
         self.page_progress.set(completed / self.total_pages if self.total_pages else 0)
         self.update_idletasks()
     
