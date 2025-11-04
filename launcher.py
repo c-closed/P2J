@@ -34,10 +34,13 @@ class Config:
     POPPLER_REPO_NAME = "poppler-windows"
     
     # 다운로드 설정
-    MAX_RETRIES = 3
-    RETRY_DELAY = 2
-    DOWNLOAD_TIMEOUT = 60
-    MAX_CONCURRENT_DOWNLOADS = 10  # 동시 다운로드 수
+    MAX_RETRIES = 5
+    RETRY_DELAY = 5
+    DOWNLOAD_TIMEOUT = 90
+    MAX_CONCURRENT_DOWNLOADS = 3
+    
+    # GitHub Token (옵션 - Rate Limit 해결용)
+    GITHUB_TOKEN = "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"
     
     @staticmethod
     def init_ssl():
@@ -201,66 +204,203 @@ class GitHubDownloader:
     
     @staticmethod
     def download_file(repo_owner: str, repo_name: str, file_path: str, 
-                     dest_path: Path, branch: str) -> bool:
-        """단일 파일 다운로드 (재시도 로직 포함)"""
-        url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/{file_path}"
+                     dest_path: Path, branch: str, verbose: bool = False) -> bool:
+        """단일 파일 다운로드"""
+        timestamp = int(time.time() * 1000)
+        url = f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/{branch}/release/{file_path}?nocache={timestamp}"
+        
+        if verbose:
+            print(f"\n{'='*60}")
+            print(f"다운로드 시도: {file_path}")
+            print(f"URL: {url}")
         
         for attempt in range(Config.MAX_RETRIES):
             try:
-                # 스트리밍 방식으로 다운로드 (청크 크기 증가)
+                headers = {
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                }
+                
+                # GitHub Token 추가
+                if Config.GITHUB_TOKEN:
+                    headers['Authorization'] = f'token {Config.GITHUB_TOKEN}'
+                    if verbose:
+                        print(f"  GitHub Token 사용 중")
+                
+                if verbose:
+                    print(f"  시도 {attempt + 1}/{Config.MAX_RETRIES}")
+                
                 with requests.get(url, timeout=Config.DOWNLOAD_TIMEOUT, 
-                                verify=VERIFY_SSL, stream=True) as resp:
+                                verify=VERIFY_SSL, stream=True, headers=headers) as resp:
                     
-                    # Rate limit 확인
+                    if verbose:
+                        print(f"  응답 코드: {resp.status_code}")
+                        
+                        # Rate Limit 정보
+                        if 'X-RateLimit-Limit' in resp.headers:
+                            print(f"  Rate Limit:")
+                            print(f"    - 총 제한: {resp.headers.get('X-RateLimit-Limit')}")
+                            print(f"    - 남은 횟수: {resp.headers.get('X-RateLimit-Remaining')}")
+                            reset_time = int(resp.headers.get('X-RateLimit-Reset', 0))
+                            if reset_time:
+                                reset_str = time.strftime('%H:%M:%S', time.localtime(reset_time))
+                                print(f"    - 리셋 시간: {reset_str}")
+                    
+                    # Rate Limit 처리
                     if resp.status_code == 403:
                         remaining = resp.headers.get('X-RateLimit-Remaining', '?')
                         if remaining == '0':
                             reset_time = int(resp.headers.get('X-RateLimit-Reset', 0))
-                            wait_seconds = reset_time - time.time()
-                            print(f"Rate limit 도달. {wait_seconds:.0f}초 후 재시도 필요")
-                            return False
+                            wait_seconds = max(reset_time - time.time(), 0) + 10
+                            
+                            if wait_seconds < 300:  # 5분 이내면 대기
+                                print(f"  Rate Limit 도달. {wait_seconds:.0f}초 대기 중...")
+                                time.sleep(wait_seconds)
+                                continue
+                            else:
+                                print(f"  Rate Limit 대기 시간이 너무 김 ({wait_seconds:.0f}초)")
+                                return False
+                    
+                    # 404 오류
+                    if resp.status_code == 404:
+                        print(f"  ✗ 파일을 찾을 수 없음 (404): {file_path}")
+                        print(f"  GitHub에서 파일 존재 여부 확인 필요")
+                        return False
                     
                     resp.raise_for_status()
                     
-                    # 디렉토리 생성
+                    # 파일 정보
+                    content_length = resp.headers.get('Content-Length')
+                    expected_size = int(content_length) if content_length else None
+                    
+                    if verbose and expected_size:
+                        print(f"  파일 크기: {expected_size:,} bytes ({expected_size/1024:.1f} KB)")
+                    
                     dest_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                    # 파일 쓰기 권한 확인
                     if dest_path.exists() and not os.access(dest_path, os.W_OK):
-                        print(f"파일 쓰기 권한 없음: {dest_path}")
+                        print(f"  ✗ 쓰기 권한 없음: {dest_path}")
                         return False
                     
-                    # 청크 단위로 다운로드 (크기 증가: 8KB → 64KB)
-                    with open(dest_path, "wb") as f:
+                    # 임시 파일로 다운로드
+                    temp_path = dest_path.with_suffix(dest_path.suffix + '.tmp')
+                    actual_size = 0
+                    start_time = time.time()
+                    
+                    with open(temp_path, "wb") as f:
                         for chunk in resp.iter_content(chunk_size=65536):
                             if chunk:
                                 f.write(chunk)
+                                actual_size += len(chunk)
                     
-                    # 파일 생성 확인
-                    if not dest_path.exists():
-                        print(f"파일 생성 실패: {dest_path}")
+                    elapsed_time = time.time() - start_time
+                    
+                    if verbose:
+                        speed = actual_size / elapsed_time / 1024 if elapsed_time > 0 else 0
+                        print(f"  다운로드 완료: {actual_size:,} bytes ({elapsed_time:.2f}초, {speed:.1f} KB/s)")
+                    
+                    # 크기 검증
+                    if expected_size and actual_size != expected_size:
+                        print(f"  ✗ 크기 불일치: {file_path}")
+                        print(f"    예상: {expected_size:,} bytes")
+                        print(f"    실제: {actual_size:,} bytes")
+                        temp_path.unlink()
+                        if attempt < Config.MAX_RETRIES - 1:
+                            time.sleep(Config.RETRY_DELAY)
+                            continue
                         return False
+                    
+                    # 최종 파일로 이동
+                    if dest_path.exists():
+                        dest_path.unlink()
+                    temp_path.rename(dest_path)
+                    
+                    if not dest_path.exists():
+                        print(f"  ✗ 파일 이동 실패: {file_path}")
+                        return False
+                    
+                    if verbose:
+                        print(f"  ✓ 성공")
+                        print(f"{'='*60}\n")
                     
                     return True
                     
-            except requests.exceptions.Timeout:
+            except requests.exceptions.Timeout as e:
+                print(f"  ✗ 타임아웃 ({attempt + 1}/{Config.MAX_RETRIES}): {file_path}")
+                if verbose:
+                    print(f"     {e}")
                 if attempt < Config.MAX_RETRIES - 1:
                     time.sleep(Config.RETRY_DELAY)
                 continue
                 
-            except requests.exceptions.ConnectionError:
+            except requests.exceptions.ConnectionError as e:
+                print(f"  ✗ 연결 오류 ({attempt + 1}/{Config.MAX_RETRIES}): {file_path}")
+                if verbose:
+                    print(f"     {e}")
+                if attempt < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                continue
+                
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response else 'N/A'
+                print(f"  ✗ HTTP 오류 ({status_code}): {file_path}")
+                if verbose:
+                    print(f"     {e}")
                 if attempt < Config.MAX_RETRIES - 1:
                     time.sleep(Config.RETRY_DELAY)
                 continue
                 
             except PermissionError as e:
-                print(f"권한 오류({file_path}): {e}")
+                print(f"  ✗ 권한 오류: {file_path}")
+                print(f"     관리자 권한으로 실행 필요")
                 return False
                 
             except Exception as e:
+                print(f"  ✗ 예상치 못한 오류 ({attempt + 1}/{Config.MAX_RETRIES}): {file_path}")
+                print(f"     {type(e).__name__}: {e}")
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
                 if attempt < Config.MAX_RETRIES - 1:
                     time.sleep(Config.RETRY_DELAY)
                 continue
+        
+        print(f"  ✗ 모든 재시도 실패: {file_path}")
+        if verbose:
+            print(f"{'='*60}\n")
+        return False
+    
+    @staticmethod
+    def download_file_with_verification(repo_owner: str, repo_name: str, file_path: str, 
+                                       dest_path: Path, branch: str, expected_hash: str) -> bool:
+        """해시 검증을 포함한 다운로드"""
+        for attempt in range(Config.MAX_RETRIES):
+            # 다운로드 시도 (상세 로그는 마지막 시도에만)
+            verbose = (attempt == Config.MAX_RETRIES - 1)
+            
+            if GitHubDownloader.download_file(repo_owner, repo_name, file_path, dest_path, branch, verbose):
+                # 해시 검증
+                downloaded_hash = FileUtils.calculate_hash(dest_path)
+                
+                if downloaded_hash == expected_hash:
+                    return True  # 성공
+                else:
+                    print(f"  ✗ 해시 불일치 ({attempt + 1}/{Config.MAX_RETRIES}): {file_path}")
+                    print(f"     예상: {expected_hash}")
+                    print(f"     실제: {downloaded_hash}")
+                    
+                    # 파일 삭제 후 재시도
+                    if dest_path.exists():
+                        dest_path.unlink()
+                    
+                    if attempt < Config.MAX_RETRIES - 1:
+                        time.sleep(Config.RETRY_DELAY * 2)
+                        continue
+            else:
+                if attempt < Config.MAX_RETRIES - 1:
+                    time.sleep(Config.RETRY_DELAY)
+                    continue
         
         return False
     
@@ -271,11 +411,12 @@ class GitHubDownloader:
         
         dest_path = app_dir / file_path
         
-        # 다운로드
-        success = GitHubDownloader.download_file(repo_owner, repo_name, file_path, dest_path, branch)
+        # 해시 검증을 포함한 다운로드
+        success = GitHubDownloader.download_file_with_verification(
+            repo_owner, repo_name, file_path, dest_path, branch, expected_hash
+        )
         
         if success:
-            # 해시 검증
             downloaded_hash = FileUtils.calculate_hash(dest_path)
             hash_match = (downloaded_hash == expected_hash)
             return (index, file_path, expected_hash, hash_match, downloaded_hash)
@@ -431,6 +572,13 @@ class IntegrityChecker:
         # 원격 파일 검사
         for path, remote_hash in remote_files.items():
             file_path = app_dir / path
+            
+            # 보호된 파일 제외
+            if IntegrityChecker._is_protected_file(file_path, launcher_exe, poppler_dir):
+                if log_callback:
+                    log_callback(f"    • {path}: 보호됨 (스킵)", False)
+                continue
+            
             needs_download = False
             reason = ""
             
@@ -459,17 +607,10 @@ class IntegrityChecker:
                 file_path = app_dir / path
                 
                 # 보호 대상 확인
-                is_protected = False
-                try:
-                    if file_path.is_relative_to(poppler_dir):
-                        is_protected = True
-                except:
-                    pass
+                if IntegrityChecker._is_protected_file(file_path, launcher_exe, poppler_dir):
+                    continue
                 
-                if launcher_exe and "launcher" in file_path.name.lower():
-                    is_protected = True
-                
-                if not is_protected and file_path.exists():
+                if file_path.exists():
                     files_to_delete.append({'path': path, 'reason': '원격에 없음'})
                     if log_callback:
                         log_callback(f"    • {path}: 삭제 대상 (원격에 없음)", False)
@@ -481,6 +622,32 @@ class IntegrityChecker:
                 log_callback("  ✓ 검사 완료: 모든 파일 정상", False)
         
         return {'to_download': files_to_download, 'to_delete': files_to_delete}
+    
+    @staticmethod
+    def _is_protected_file(file_path: Path, launcher_exe: Optional[Path], poppler_dir: Path) -> bool:
+        """보호 대상 파일인지 확인"""
+        # 1. Poppler 폴더 내부
+        try:
+            if file_path.is_relative_to(poppler_dir):
+                return True
+        except:
+            pass
+        
+        # 2. 런처 실행 파일 자신
+        if launcher_exe and file_path == launcher_exe:
+            return True
+        
+        # 3. 런처 관련 파일 (이름에 "launcher" 포함)
+        if "launcher" in file_path.name.lower():
+            return True
+        
+        # 4. 현재 실행 중인 파일
+        if getattr(sys, 'frozen', False):
+            current_exe = Path(sys.executable)
+            if file_path == current_exe:
+                return True
+        
+        return False
 
 
 # ==================== 업데이트 관리자 ====================
@@ -625,7 +792,7 @@ class UpdateManager:
     @staticmethod
     def _repair_files(app_dir: Path, files_to_download: List[Dict],
                      log_callback: Optional[Callable]) -> None:
-        """파일 복구 (병렬 처리)"""
+        """파일 복구 (병렬 처리 + 실패 파일 재시도)"""
         if log_callback:
             log_callback("", False)
             log_callback(f"→ 손상된 파일 복구 시작 ({len(files_to_download)}개)", False)
@@ -633,6 +800,7 @@ class UpdateManager:
         success_count = 0
         fail_count = 0
         total_files = len(files_to_download)
+        failed_files = []
         
         # 병렬 다운로드 준비
         download_args = [
@@ -641,7 +809,7 @@ class UpdateManager:
             for i, file_info in enumerate(files_to_download)
         ]
         
-        # 병렬 다운로드 실행
+        # 1차 시도: 병렬 다운로드
         with concurrent.futures.ThreadPoolExecutor(max_workers=Config.MAX_CONCURRENT_DOWNLOADS) as executor:
             futures = {executor.submit(GitHubDownloader._download_single_file, args): args 
                       for args in download_args}
@@ -654,19 +822,46 @@ class UpdateManager:
                         success_count += 1
                         if log_callback:
                             log_callback(f"  ✓ [{index}/{total_files}] {file_path}", False)
-                    elif downloaded_hash is not None:
-                        fail_count += 1
-                        if log_callback:
-                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (해시 불일치)", False)
                     else:
                         fail_count += 1
+                        failed_files.append((index, file_path, expected_hash))
                         if log_callback:
-                            log_callback(f"  ✗ [{index}/{total_files}] {file_path} (다운로드 실패)", False)
+                            if downloaded_hash is not None:
+                                log_callback(f"  ✗ [{index}/{total_files}] {file_path} (해시 불일치)", False)
+                            else:
+                                log_callback(f"  ✗ [{index}/{total_files}] {file_path} (다운로드 실패)", False)
                 
                 except Exception as e:
                     fail_count += 1
                     if log_callback:
                         log_callback(f"  ✗ 다운로드 오류: {e}", False)
+        
+        # 2차 시도: 실패한 파일 순차적으로 재시도
+        if failed_files:
+            if log_callback:
+                log_callback("", False)
+                log_callback(f"→ 실패한 파일 재시도 ({len(failed_files)}개)", False)
+            
+            for index, file_path, expected_hash in failed_files:
+                if log_callback:
+                    log_callback(f"  → 재시도 중: {file_path}", False)
+                
+                dest_path = app_dir / file_path
+                
+                # 순차적 재시도
+                retry_success = GitHubDownloader.download_file_with_verification(
+                    Config.APP_REPO_OWNER, Config.APP_REPO_NAME, 
+                    file_path, dest_path, Config.APP_BRANCH, expected_hash
+                )
+                
+                if retry_success:
+                    success_count += 1
+                    fail_count -= 1
+                    if log_callback:
+                        log_callback(f"  ✓ 재시도 성공: {file_path}", False)
+                else:
+                    if log_callback:
+                        log_callback(f"  ✗ 재시도 실패: {file_path}", False)
         
         if log_callback:
             if fail_count > 0:
