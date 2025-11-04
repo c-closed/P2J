@@ -96,7 +96,7 @@ class AppConfig:
     
     APP_REPO_OWNER: str = "c-closed"
     APP_REPO_NAME: str = "P2J"
-    CURRENT_VERSION: str = "2.1.8"
+    CURRENT_VERSION: str = "2.1.9"
     POPPLER_REPO_OWNER: str = "oschwartz10612"
     POPPLER_REPO_NAME: str = "poppler-windows"
     
@@ -631,9 +631,9 @@ class InitializationWindow(tk.Tk):
             self, 
             height=22, 
             width=85,
-            font=("Consolas", 10),
-            bg="#2b2b2b",
-            fg="#ffffff",
+            font=("Consolas", 8),
+            bg="#ffffff",
+            fg="#000000",
             state="disabled"
         )
         self.log_box.pack(pady=10, padx=25, fill="both", expand=True)
