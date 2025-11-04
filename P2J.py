@@ -1,7 +1,6 @@
 """
 PDF to JPG Converter with Auto-Update
 Author: 류호준
-Version: 2.1.4
 """
 
 import os
@@ -71,7 +70,7 @@ class AppConfig:
     
     APP_REPO_OWNER: str = "c-closed"
     APP_REPO_NAME: str = "P2J"
-    CURRENT_VERSION: str = "2.1.4"
+    CURRENT_VERSION: str = "2.1.5"
     POPPLER_REPO_OWNER: str = "oschwartz10612"
     POPPLER_REPO_NAME: str = "poppler-windows"
     
@@ -293,23 +292,37 @@ class ReleaseManager:
     
     @staticmethod
     def run_msi_installer(msi_path: Path, log_callback: Optional[Callable] = None) -> bool:
+        """MSI 설치 프로그램을 독립 프로세스로 실행"""
         if not msi_path.exists():
             ReleaseManager._log(log_callback, "  ✗ MSI 파일을 찾을 수 없습니다")
             return False
-        
+
         try:
             ReleaseManager._log(log_callback, "→ MSI 설치 프로그램 실행 중...")
-            ReleaseManager._log(log_callback, "  • 설치 창이 열립니다")
-            
-            subprocess.Popen(['msiexec', '/i', str(msi_path)], shell=True)
-            
+            ReleaseManager._log(log_callback, "  • 설치 창이 백그라운드에서 열립니다")
+
+            # Windows 전용: 완전히 독립된 프로세스로 실행
+            if sys.platform == 'win32':
+                subprocess.Popen(
+                    ['msiexec', '/i', str(msi_path)],
+                    shell=False,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    close_fds=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                )
+            else:
+                # 기타 OS (사용 안함)
+                subprocess.Popen(['msiexec', '/i', str(msi_path)], shell=False)
+
             ReleaseManager._log(log_callback, "  ✓ 설치 프로그램 실행 완료")
-            time.sleep(2)
+            time.sleep(1)
             return True
         except Exception as e:
             ReleaseManager._log(log_callback, f"  ✗ 설치 프로그램 실행 실패: {e}")
             return False
-    
+
     @staticmethod
     def _log(callback: Optional[Callable], message: str, is_progress: bool = False):
         if callback:
