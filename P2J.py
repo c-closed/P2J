@@ -109,7 +109,7 @@ initialize_theme()
 class AppConfig:
     """애플리케이션 전역 설정"""
     APP_TITLE: str = "PDF → JPG 변환기 [made by. 류호준]"
-    CURRENT_VERSION: str = "2.2.0"
+    CURRENT_VERSION: str = "2.2.1"
     APP_REPO_OWNER: str = "c-closed"
     APP_REPO_NAME: str = "P2J"
     POPPLER_REPO_OWNER: str = "oschwartz10612"
@@ -318,9 +318,7 @@ class ReleaseInfo:
     """Release 정보 데이터 클래스"""
     version: str
     name: str
-    msi_url: str
-    msi_filename: str
-    msi_size: int
+    html_url: str
 
 
 class ReleaseManager:
@@ -345,85 +343,28 @@ class ReleaseManager:
         tag_name = data.get('tag_name', '')
         LogCallback.log(log_callback, f"  ✓ 최신 Release 버전: {tag_name}")
         
-        msi_asset = next((a for a in data.get('assets', []) if a['name'].lower().endswith('.msi')), None)
-        
-        if not msi_asset:
-            LogCallback.log(log_callback, "  ! Release에 .msi 파일이 없습니다")
-            return None
-        
         return ReleaseInfo(
             version=tag_name,
             name=data.get('name', ''),
-            msi_url=msi_asset['browser_download_url'],
-            msi_filename=msi_asset['name'],
-            msi_size=msi_asset['size']
+            html_url=data.get('html_url', '')
         )
     
-    def download_msi(
-        self,
-        release_info: ReleaseInfo,
-        dest_folder: Path,
-        log_callback: Optional[Callable[[str, bool], None]] = None
-    ) -> Optional[Path]:
-        """MSI 파일 다운로드"""
-        msi_path = dest_folder / release_info.msi_filename
-        size_mb = release_info.msi_size / (1024 * 1024)
-        
-        LogCallback.log(log_callback, f"→ MSI 다운로드 시작: {release_info.msi_filename}")
-        LogCallback.log(log_callback, f"  • 파일 크기: {size_mb:.1f} MB")
-        
-        def progress_callback(percent: int) -> None:
-            if percent >= 100:
-                LogCallback.log(log_callback, "  ✓ 다운로드 완료", True)
-            else:
-                LogCallback.log(log_callback, f"  → 다운로드 진행: {percent}%", True)
-        
-        if self.api_client.download_file(release_info.msi_url, msi_path, progress_callback):
-            return msi_path
-        
-        LogCallback.log(log_callback, "  ✗ 다운로드 실패")
-        return None
-    
     @staticmethod
-    def run_msi_installer(
-        msi_path: Path,
+    def open_release_page(
+        release_url: str,
         log_callback: Optional[Callable[[str, bool], None]] = None
     ) -> bool:
-        """MSI 설치 프로그램을 독립 프로세스로 실행"""
-        if not msi_path.exists():
-            LogCallback.log(log_callback, "  ✗ MSI 파일을 찾을 수 없습니다")
-            return False
-        
+        """브라우저로 Release 페이지 열기"""
         try:
-            LogCallback.log(log_callback, "→ MSI 설치 프로그램 실행 중...")
-            LogCallback.log(log_callback, "  • 설치 창이 백그라운드에서 열립니다")
-            
-            if sys.platform == 'win32':
-                CREATE_NEW_PROCESS_GROUP = 0x00000200
-                DETACHED_PROCESS = 0x00000008
-                
-                subprocess.Popen(
-                    ['msiexec', '/i', str(msi_path)],
-                    shell=False,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                    creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-                )
-            else:
-                subprocess.Popen(['msiexec', '/i', str(msi_path)], shell=False)
-            
-            LogCallback.log(log_callback, "  ✓ 설치 프로그램 실행 완료")
-            time.sleep(1)
+            import webbrowser
+            LogCallback.log(log_callback, "→ 브라우저로 Release 페이지를 엽니다...")
+            LogCallback.log(log_callback, f"  • URL: {release_url}")
+            webbrowser.open(release_url)
+            LogCallback.log(log_callback, "  ✓ 브라우저 열기 완료")
             return True
-        
         except Exception as e:
-            LogCallback.log(log_callback, f"  ✗ 설치 프로그램 실행 실패: {e}")
+            LogCallback.log(log_callback, f"  ✗ 브라우저 열기 실패: {e}")
             return False
-
-
-# ==================== Poppler 관리 ====================
 
 
 class PopplerManager:
@@ -604,9 +545,6 @@ class PopplerManager:
                     LogCallback.log(log_callback, f"  ✗ 삭제 실패: {e}")
 
 
-# ==================== PDF 처리 ====================
-
-
 class PDFProcessor:
     """PDF to JPG 변환 처리"""
     
@@ -660,9 +598,6 @@ class PDFProcessor:
                 progress_callback(i)
         
         return len(images)
-
-
-# ==================== UI: 초기화 창 ====================
 
 
 @dataclass
@@ -757,7 +692,7 @@ class InitializationWindow(tk.Tk):
         api_client: GitHubAPIClient,
         log_cb: Callable[[str, bool], None]
     ) -> None:
-        """업데이트 확인 및 설치"""
+        """업데이트 확인 및 Release 페이지 열기"""
         self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
         self._add_log("[ 업데이트 확인 ]", False)
         self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
@@ -781,26 +716,24 @@ class InitializationWindow(tk.Tk):
             self._add_log("✓ 이미 최신 버전입니다", False)
             return
         
+        # 새 버전 발견 - Release 페이지 열기
         self._add_log("", False)
         self._add_log("! 새 버전 발견!", False)
-        self._add_log(f"  • 파일명: {release_info.msi_filename}", False)
         self._add_log("", False)
         
-        msi_path = release_manager.download_msi(release_info, self.app_dir, log_cb)
-        
-        if msi_path and release_manager.run_msi_installer(msi_path, log_cb):
+        if release_manager.open_release_page(release_info.html_url, log_cb):
             self._add_log("", False)
             self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
-            self._add_log("✓ 업데이트 시작됨", False)
-            self._add_log("설치 프로그램이 백그라운드에서 실행됩니다.", False)
+            self._add_log("✓ 브라우저에서 최신 버전을 다운로드하세요", False)
             self._add_log("프로그램을 종료합니다.", False)
             self._add_log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", False)
-            time.sleep(3)
+            time.sleep(2)
             
+            # 앱 종료 플래그 설정
             self.result.update_started = True
             self.result.should_close = True
             self.result.launch_main = False
-    
+
     def _countdown(self) -> None:
         """프로그램 시작 카운트다운"""
         self._add_log("", False)
@@ -847,19 +780,10 @@ class InitializationWindow(tk.Tk):
             self.after(100, self._check_close)
 
 
-# ==================== UI: 진행 팝업 ====================
-
-
 class ProgressPopup(ctk.CTkToplevel):
     """진행률 표시 팝업"""
     
     def __init__(self, parent, total_files: int, total_pages: int):
-        """
-        Args:
-            parent: 부모 윈도우 (타입 힌트 제거하여 Misc 오류 해결)
-            total_files: 총 파일 수
-            total_pages: 총 페이지 수
-        """
         super().__init__(parent)
         self.total_files = total_files
         self.total_pages = total_pages
@@ -872,7 +796,7 @@ class ProgressPopup(ctk.CTkToplevel):
         self._create_widgets()
     
     def _setup_window(self, parent) -> None:
-        """창 설정 (타입 힌트 제거)"""
+        """창 설정"""
         self.title("진행 중")
         self.geometry("450x170")
         self.resizable(False, False)
@@ -955,17 +879,10 @@ class ProgressPopup(ctk.CTkToplevel):
         self.destroy()
 
 
-# ==================== UI: 메인 앱 ====================
-
-
 class PDFtoJPGApp(ctk.CTkFrame):
     """메인 애플리케이션"""
     
     def __init__(self, master):
-        """
-        Args:
-            master: TkinterDnD.Tk 윈도우 (타입 힌트 제거하여 Misc 오류 해결)
-        """
         super().__init__(master)
         self.pack(fill="both", expand=True)
         self.master = master
@@ -1061,7 +978,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self._add_files(pdf_files)
     
     def _add_files(self, files) -> None:
-        """파일 목록에 추가 (tuple과 list 모두 허용)"""
+        """파일 목록에 추가"""
         for f in files:
             if f not in self.pdf_files:
                 self.pdf_files.append(f)
@@ -1132,7 +1049,7 @@ class PDFtoJPGApp(ctk.CTkFrame):
         self._cancel_requested = True
     
     def _convert_files(self) -> None:
-        """PDF 파일들을 JPG로 변환 (백그라운드 스레드)"""
+        """PDF 파일들을 JPG로 변환"""
         try:
             completed_files = 0
             completed_pages = 0
@@ -1170,9 +1087,6 @@ class PDFtoJPGApp(ctk.CTkFrame):
             messagebox.showerror("오류", f"변환 중 오류 발생: {e}")
             if self.progress_popup:
                 self.progress_popup.destroy()
-
-
-# ==================== 메인 ====================
 
 
 def main() -> None:
